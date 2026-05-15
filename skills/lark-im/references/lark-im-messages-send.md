@@ -20,6 +20,8 @@ When using `--as bot`, the message is sent in the app's name, so make sure the a
 
 When using `--as user`, the message is sent as the authorized end user and requires the `im:message.send_as_user` and `im:message` scopes.
 
+Scopes are necessary but not sufficient. User identity sending can still be rejected by tenant security policy, external chat restrictions, bot/app visibility, or chat membership. If a user has the required scopes but sending fails, do not keep asking them to re-authorize blindly; collect the response code, `log_id`, target chat type (internal/external), identity (`--as user` or `--as bot`), and whether the app/user is in the chat.
+
 ## Choose The Right Content Flag
 
 | Need | Recommended flag | Why |
@@ -171,6 +173,8 @@ lark-cli im +messages-send --chat-id oc_xxx --markdown $'## Test\n\nhello' --dry
 
 - Choosing `--markdown` when you actually need exact plain text. If exact line breaks and spacing matter, use `--text`, usually with `$'...'`.
 - Assuming `--markdown` supports all Markdown features. It does not; it is converted into a Feishu `post` payload and rewritten first.
+- Assuming Markdown tables will render like GitHub Flavored Markdown. Plain text/post Markdown is not a reliable table transport in IM. For structured tables, use an interactive card payload via `--content` and `--msg-type interactive`, or send a document/sheet link.
+- Treating `im:message.send_as_user` as enough to send to any group. External chats and enterprise security policy may still block user-identity sending even after the scope is granted.
 - Putting local image paths inside Markdown like `![x](./a.png)`. `--markdown` does not auto-upload those paths.
 - Using `--content` without making the JSON match the effective `--msg-type`.
 - Explicitly setting `--msg-type` to something that conflicts with `--text`, `--markdown`, or media flags.

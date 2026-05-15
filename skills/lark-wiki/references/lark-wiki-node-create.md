@@ -112,6 +112,18 @@ lark-cli wiki +node-create \
 - **bot 自动授权**：若使用 `--as bot`，结果还会额外带上 `permission_grant`，用于说明是否已自动为当前 CLI 用户授予新建节点的可管理权限
 - **输出结果**：成功后会返回 `resolved_space_id`、`resolved_by`、`node_token`、`obj_token`、`obj_type`、`node_type`、`title` 等字段，便于后续继续操作
 
+## need_user_authorization 排查
+
+如果 `--as user` 创建节点返回 `need_user_authorization`，不要只归因于“文档协作权限不足”，也不要只让用户反复重登。按以下顺序排查：
+
+1. 确认当前命令实际使用的是 user 身份，而不是 auto fallback 到 bot。
+2. 确认当前 profile、app_id、租户和用户授权所在租户一致。
+3. 使用 `lark-cli auth login --scope "wiki:node:create wiki:space:read"` 补齐最小相关 scope；如果后续还要写底层文档，再补 docs/drive 相关 scope。
+4. 确认目标 `--space-id` 或 `--parent-node-token` 对当前用户可见，并且用户有在该知识空间创建节点的协作权限。
+5. 保留完整错误 envelope、`log_id`、命令参数和 profile 名称给 owner 排查。
+
+`need_user_authorization` 表示用户授权链路、scope、租户或资源权限至少有一项不满足；它不是一个单一根因。
+
 ## 推荐场景
 
 - 用户说“在我的知识库里新建一篇页面”时，优先用 `lark-cli wiki +node-create --title "..."`

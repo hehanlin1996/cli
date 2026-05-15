@@ -14,6 +14,8 @@ description: "飞书/Lark CLI 共享基础：应用配置初始化、认证登�
 
 当你帮用户初始化配置时，使用background方式使用下面的命令发起配置应用流程，启动后读取输出，从中提取授权链接并发给用户：
 
+**URL 转发规则**：当命令输出 `verification_url`、`verification_uri_complete`、`console_url` 等 URL 字段时，必须将 URL exactly as returned by the CLI 转发给用户，并把它视为不可修改的 opaque string；不要做 URL encode/decode，不要补 `%20`、空格或标点，不要重新拼接 query，不要改写成 Markdown link text，建议用只包含原始 URL 的代码块单独输出。
+
 ```bash
 # 发起配置（该命令会阻塞直到用户打开链接并完成操作或过期）
 lark-cli config init --new
@@ -51,7 +53,7 @@ lark-cli config init --new
 
 #### Bot 身份（`--as bot`）
 
-将错误中的 `console_url` 提供给用户，引导去后台开通 scope。**禁止**对 bot 执行 `auth login`。
+将错误中的 `console_url` 原样提供给用户，引导去后台开通 scope。**禁止**对 bot 执行 `auth login`。
 
 #### User 身份（`--as user`）
 
@@ -64,13 +66,26 @@ lark-cli auth login --scope "<missing_scope>"   # 按具体 scope 授权（推�
 
 #### Agent 代理发起认证（推荐）
 
-当你作为 AI agent 需要帮用户完成认证时，使用background方式 执行以下命令发起授权流程, 并将授权链接发给用户：
+当你作为 AI agent 需要帮用户完成认证时，使用background方式 执行以下命令发起授权流程, 并将授权链接原样发给用户：
 
 ```bash
 # 发起授权（阻塞直到用户授权完成或过期）
 lark-cli auth login --scope "calendar:calendar:readonly"
 
 ```
+
+### 沙盒 / Keychain 问题
+
+如果用户在 Claude Code Desktop、Codex、IDE sandbox 或其他受限运行时中遇到 `keychain not initialized`、`no credential`、`401` 但普通终端可用，优先判断为运行时无法访问系统 Keychain 或 CLI 配置目录。
+
+处理顺序：
+
+1. 让用户在非沙盒终端运行同一条 `lark-cli ... --as user` 命令，确认凭证本身是否可用。
+2. 核对 Agent 与终端是否使用同一个 profile、`LARKSUITE_CLI_CONFIG_DIR`、应用 app_id 和租户。
+3. 让用户重启 Agent/IDE，确保新授权和环境变量被重新加载。
+4. 如果沙盒不能访问 Keychain，建议使用可挂载凭证目录、本地执行器，或等待/接入正式的非 Keychain 凭证方案。
+
+**不要**建议不存在或未验证的命令，例如 `lark-cli config set storage file`。给出任何配置命令前必须先用 `lark-cli config --help` 或相关子命令 `--help` 验证它真实存在。
 
 
 ## 更新检查
