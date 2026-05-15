@@ -6,6 +6,7 @@ package shortcuts
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/larksuite/cli/internal/cmdutil"
 	"github.com/larksuite/cli/internal/core"
+	"github.com/larksuite/cli/internal/output"
 	"github.com/spf13/cobra"
 )
 
@@ -109,7 +111,7 @@ func TestRegisterShortcutsMountsDocsMediaPreview(t *testing.T) {
 	}
 }
 
-func TestRegisterShortcutsDocsHelpAddsVersionSelectorAndLegacyTips(t *testing.T) {
+func TestRegisterShortcutsDocsHelpAddsVersionSelectorAndUpgradeTips(t *testing.T) {
 	program := &cobra.Command{Use: "root"}
 	RegisterShortcuts(program, newRegisterTestFactory(t))
 
@@ -135,11 +137,11 @@ func TestRegisterShortcutsDocsHelpAddsVersionSelectorAndLegacyTips(t *testing.T)
 	}
 	for _, want := range []string{
 		"Tips:",
-		"Agent version rule",
-		"use --api-version v2 only when the installed lark-doc skill explicitly instructs",
-		"otherwise use the default v1 flags",
-		"if the skill does not mention v2",
-		"legacy v1 examples and flags",
+		"Docs v1 is deprecated and will be removed soon",
+		"Check the installed lark-doc skill first",
+		"if it is not the v2 skill, run `lark-cli update` to upgrade skills",
+		"After confirming lark-doc is v2",
+		"use `--api-version v2` with docs +create, docs +fetch, and docs +update",
 	} {
 		if !strings.Contains(defaultHelp.String(), want) {
 			t.Fatalf("docs default help missing %q:\n%s", want, defaultHelp.String())
@@ -168,13 +170,20 @@ func TestRegisterShortcutsDocsV2HelpUsesV2Description(t *testing.T) {
 	for _, want := range []string{
 		"Document and content operations (v2).",
 		"Tips:",
-		"Agent version rule",
-		"otherwise use the default v1 flags",
-		"if the skill does not mention v2",
-		"legacy v1 examples and flags",
+		"Check the installed lark-doc skill first",
+		"if it is not the v2 skill, run `lark-cli update` to upgrade skills",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("docs v2 help missing %q:\n%s", want, out.String())
+		}
+	}
+	for _, unwanted := range []string{
+		"Docs v1 is deprecated and will be removed soon",
+		"After confirming lark-doc is v2",
+		"use `--api-version v2` with docs +create, docs +fetch, and docs +update",
+	} {
+		if strings.Contains(out.String(), unwanted) {
+			t.Fatalf("docs v2 help should not include %q:\n%s", unwanted, out.String())
 		}
 	}
 }
@@ -253,24 +262,47 @@ func TestRegisterShortcutsDocsVersionedShortcutHelpAddsVersionTips(t *testing.T)
 				t.Fatalf("docs %s help failed: %v", tt.shortcut, err)
 			}
 
+			wantTips := []string{
+				"Tips:",
+				"Docs v1 is deprecated and will be removed soon",
+				"Check the installed lark-doc skill first",
+				"if it is not the v2 skill, run `lark-cli update` to upgrade skills",
+				"After confirming lark-doc is v2",
+				"use `--api-version v2` with docs +create, docs +fetch, and docs +update",
+			}
+			unwantedTips := []string{
+				"[NOTE]",
+				"Use --api-version v2 for the latest API",
+				"otherwise use the default v1 flags",
+				"legacy v1 examples and flags",
+			}
+			if tt.apiVersion == "v2" {
+				wantTips = []string{
+					"Tips:",
+					"Check the installed lark-doc skill first",
+					"if it is not the v2 skill, run `lark-cli update` to upgrade skills",
+				}
+				unwantedTips = append(unwantedTips,
+					"Docs v1 is deprecated and will be removed soon",
+					"After confirming lark-doc is v2",
+					"use `--api-version v2` with docs +create, docs +fetch, and docs +update",
+				)
+			}
+
 			for _, want := range []string{
 				tt.shortcutHelp,
 				tt.versionedFlag,
-				"Tips:",
-				"Agent version rule",
-				"use --api-version v2 only when the installed lark-doc skill explicitly instructs",
-				"otherwise use the default v1 flags",
-				"if the skill does not mention v2",
-				"legacy v1 examples and flags",
 			} {
 				if !strings.Contains(out.String(), want) {
 					t.Fatalf("docs %s %s help missing %q:\n%s", tt.shortcut, tt.apiVersion, want, out.String())
 				}
 			}
-			for _, unwanted := range []string{
-				"[NOTE]",
-				"Use --api-version v2 for the latest API",
-			} {
+			for _, want := range wantTips {
+				if !strings.Contains(out.String(), want) {
+					t.Fatalf("docs %s %s help missing %q:\n%s", tt.shortcut, tt.apiVersion, want, out.String())
+				}
+			}
+			for _, unwanted := range unwantedTips {
 				if strings.Contains(out.String(), unwanted) {
 					t.Fatalf("docs %s %s help should not include %q:\n%s", tt.shortcut, tt.apiVersion, unwanted, out.String())
 				}
@@ -305,6 +337,65 @@ func TestRegisterShortcutsReusesExistingServiceCommand(t *testing.T) {
 	}
 }
 
+// TestRegisterShortcutsInstallsMailFlagSuggestHook is the end-to-end
+// wiring guard for the mail unknown-flag fuzzy-match feature: it ensures
+// the `if service == "mail" { mail.InstallOnMail(svc) }` branch in
+// RegisterShortcutsWithContext is actually exercised, so a future refactor
+// that drops the branch (or breaks the import) will fail this test rather
+// than silently regressing the structured-error contract.
+func TestRegisterShortcutsInstallsMailFlagSuggestHook(t *testing.T) {
+	program := &cobra.Command{Use: "root"}
+	RegisterShortcuts(program, newRegisterTestFactory(t))
+
+	mailCmd, _, err := program.Find([]string{"mail"})
+	if err != nil {
+		t.Fatalf("find mail command: %v", err)
+	}
+	if mailCmd == nil || mailCmd.Name() != "mail" {
+		t.Fatalf("mail command not mounted: %#v", mailCmd)
+	}
+
+	// The FlagErrorFunc lookup walks up to the nearest non-nil hook, so
+	// invoking it on the mail parent (or any of its children) must yield
+	// a structured *output.ExitError with type "unknown_flag".
+	got := mailCmd.FlagErrorFunc()(mailCmd, errors.New("unknown flag: --bogus"))
+	var exitErr *output.ExitError
+	if !errors.As(got, &exitErr) {
+		t.Fatalf("expected *output.ExitError, got %T (%v)", got, got)
+	}
+	if exitErr.Detail == nil || exitErr.Detail.Type != "unknown_flag" {
+		t.Fatalf("expected Detail.Type=unknown_flag, got %#v", exitErr.Detail)
+	}
+	if exitErr.Code != output.ExitAPI {
+		t.Fatalf("expected Code=ExitAPI(%d), got %d", output.ExitAPI, exitErr.Code)
+	}
+}
+
+// TestRegisterShortcutsLeavesNonMailFlagErrorUntouched confirms the
+// install is scoped: a non-mail service must keep the default cobra
+// pass-through behaviour, otherwise an accidental fall-through in
+// register.go would silently change every domain's error envelope.
+func TestRegisterShortcutsLeavesNonMailFlagErrorUntouched(t *testing.T) {
+	program := &cobra.Command{Use: "root"}
+	RegisterShortcuts(program, newRegisterTestFactory(t))
+
+	baseCmd, _, err := program.Find([]string{"base"})
+	if err != nil {
+		t.Fatalf("find base command: %v", err)
+	}
+	in := errors.New("unknown flag: --bogus")
+	got := baseCmd.FlagErrorFunc()(baseCmd, in)
+	// Default cobra hook is identity — anything else means the mail hook
+	// leaked across domains.
+	var exitErr *output.ExitError
+	if errors.As(got, &exitErr) {
+		t.Fatalf("base service unexpectedly produced *output.ExitError: %#v", exitErr)
+	}
+	if got != in {
+		t.Fatalf("base service should pass through original error pointer, got %T (%v)", got, got)
+	}
+}
+
 func TestGenerateShortcutsJSON(t *testing.T) {
 	output := os.Getenv("SHORTCUTS_OUTPUT")
 	if output == "" {
@@ -324,7 +415,7 @@ func TestGenerateShortcutsJSON(t *testing.T) {
 		grouped[s.Service] = append(grouped[s.Service], entry{
 			Verb:        verb,
 			Description: s.Description,
-			Scopes:      s.ScopesForIdentity("user"),
+			Scopes:      s.DeclaredScopesForIdentity("user"),
 		})
 	}
 
