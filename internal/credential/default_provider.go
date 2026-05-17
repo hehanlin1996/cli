@@ -34,9 +34,9 @@ func NewDefaultAccountProvider(kc func() keychain.KeychainAccess, profile string
 
 func (p *DefaultAccountProvider) ResolveAccount(ctx context.Context) (*Account, error) {
 	// Load config once — used for both credentials and strict mode.
-	multi, err := core.LoadMultiAppConfig()
+	multi, err := core.LoadOrNotConfigured()
 	if err != nil {
-		return nil, core.NotConfiguredError()
+		return nil, err
 	}
 
 	cfg, err := core.ResolveConfigFromMulti(multi, p.keychain(), p.profile)

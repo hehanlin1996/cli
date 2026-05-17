@@ -6,7 +6,8 @@ package core
 import (
 	"errors"
 	"fmt"
-	"os"
+	"io/fs"
+	"strings"
 )
 
 // LoadOrNotConfigured wraps LoadMultiAppConfig with the standard "not yet
@@ -23,23 +24,45 @@ import (
 func LoadOrNotConfigured() (*MultiAppConfig, error) {
 	multi, err := LoadMultiAppConfig()
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil, NotConfiguredError()
 		}
 		// Surface the real cause (parse error, permission denied, etc.)
 		// so the user can fix the broken file. Wrapping as ConfigError
 		// keeps it on the standard structured-envelope path at the root
 		// command's error sink.
-		return nil, &ConfigError{
-			Code:    2,
-			Type:    "config",
-			Message: fmt.Sprintf("failed to load config: %v", err),
-		}
+		return nil, configLoadError(err)
 	}
 	if multi == nil || len(multi.Apps) == 0 {
 		return nil, NotConfiguredError()
 	}
 	return multi, nil
+}
+
+func configLoadError(err error) *ConfigError {
+	cfgErr := &ConfigError{
+		Code:    2,
+		Type:    "config",
+		Message: fmt.Sprintf("failed to load config: %v", err),
+	}
+	if errors.Is(err, fs.ErrPermission) {
+		cfgErr.Hint = configPermissionDeniedHint(err)
+	}
+	return cfgErr
+}
+
+func configPermissionDeniedHint(err error) string {
+	path := GetConfigPath()
+	var pathErr *fs.PathError
+	if errors.As(err, &pathErr) && pathErr.Path != "" {
+		path = pathErr.Path
+	}
+	quoted := shellQuote(path)
+	return fmt.Sprintf("lark-cli cannot read config file %q because the OS denied access. Fix the owner or permissions, then run `lark-cli config show` (or `lark-cli doctor --offline`) before retrying. On macOS/Linux, after confirming this path is your lark-cli config, run: `sudo chown $(id -u):$(id -g) %s && chmod 600 %s`. Do not retry `lark-cli auth login` until the config file can be read.", path, quoted, quoted)
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
 const (

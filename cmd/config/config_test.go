@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	iofs "io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,7 +19,14 @@ import (
 	"github.com/larksuite/cli/internal/credential"
 	"github.com/larksuite/cli/internal/keychain"
 	"github.com/larksuite/cli/internal/output"
+	"github.com/larksuite/cli/internal/vfs"
 )
+
+type permissionDeniedConfigShowFS struct{ vfs.FS }
+
+func (p permissionDeniedConfigShowFS) ReadFile(name string) ([]byte, error) {
+	return nil, &iofs.PathError{Op: "open", Path: name, Err: iofs.ErrPermission}
+}
 
 type noopConfigKeychain struct{}
 
@@ -100,6 +108,29 @@ func TestConfigShowRun_NotConfiguredReturnsStructuredError(t *testing.T) {
 	}
 	if cfgErr.Type != "config" || cfgErr.Message != "not configured" {
 		t.Fatalf("detail = %+v, want config/not configured", cfgErr)
+	}
+}
+
+func TestConfigShowRun_PermissionDeniedReturnsActionableConfigError(t *testing.T) {
+	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", t.TempDir())
+	oldFS := vfs.DefaultFS
+	vfs.DefaultFS = permissionDeniedConfigShowFS{FS: oldFS}
+	t.Cleanup(func() { vfs.DefaultFS = oldFS })
+
+	f, _, _, _ := cmdutil.TestFactory(t, nil)
+	err := configShowRun(&ConfigShowOptions{Factory: f})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var cfgErr *core.ConfigError
+	if !errors.As(err, &cfgErr) {
+		t.Fatalf("error type = %T, want *core.ConfigError", err)
+	}
+	if !strings.Contains(cfgErr.Message, "failed to load config") || !strings.Contains(cfgErr.Message, "permission denied") {
+		t.Fatalf("message = %q, want failed load with permission denied", cfgErr.Message)
+	}
+	if !strings.Contains(cfgErr.Hint, "chmod 600") || !strings.Contains(cfgErr.Hint, "lark-cli config show") {
+		t.Fatalf("hint = %q, want config permission repair guidance", cfgErr.Hint)
 	}
 }
 

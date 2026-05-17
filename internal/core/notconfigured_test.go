@@ -5,10 +5,19 @@ package core
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/larksuite/cli/internal/vfs"
 )
+
+type permissionDeniedConfigFS struct{ vfs.FS }
+
+func (p permissionDeniedConfigFS) ReadFile(name string) ([]byte, error) {
+	return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrPermission}
+}
 
 // saveAndRestoreWorkspace ensures package-level currentWorkspace is reset
 // between subtests so cross-test pollution can't make assertions pass by
@@ -177,5 +186,36 @@ func TestLoadOrNotConfigured_CorruptFile_PreservesCause(t *testing.T) {
 	}
 	if strings.Contains(cfgErr.Hint, "config init") || strings.Contains(cfgErr.Hint, "config bind") {
 		t.Errorf("corrupt-file hint must not redirect to init/bind; got %q", cfgErr.Hint)
+	}
+}
+
+func TestLoadOrNotConfigured_PermissionDenied_HasActionableHint(t *testing.T) {
+	saveAndRestoreWorkspace(t)
+	SetCurrentWorkspace(WorkspaceLocal)
+	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", t.TempDir())
+	oldFS := vfs.DefaultFS
+	vfs.DefaultFS = permissionDeniedConfigFS{FS: oldFS}
+	t.Cleanup(func() { vfs.DefaultFS = oldFS })
+
+	_, err := LoadOrNotConfigured()
+	if err == nil {
+		t.Fatal("expected error for unreadable config")
+	}
+	var cfgErr *ConfigError
+	if !errors.As(err, &cfgErr) {
+		t.Fatalf("error type = %T, want *ConfigError", err)
+	}
+	if cfgErr.Message == "not configured" {
+		t.Fatalf("permission-denied config must not be reported as not configured")
+	}
+	for _, want := range []string{"failed to load config", "permission denied"} {
+		if !strings.Contains(cfgErr.Message, want) {
+			t.Fatalf("message %q missing %q", cfgErr.Message, want)
+		}
+	}
+	for _, want := range []string{"config file", "chmod 600", "chown", "lark-cli config show", "Do not retry `lark-cli auth login`"} {
+		if !strings.Contains(cfgErr.Hint, want) {
+			t.Fatalf("hint %q missing %q", cfgErr.Hint, want)
+		}
 	}
 }

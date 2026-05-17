@@ -6,13 +6,22 @@ package doctor
 import (
 	"context"
 	"encoding/json"
+	iofs "io/fs"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
 
 	"github.com/larksuite/cli/internal/cmdutil"
 	"github.com/larksuite/cli/internal/core"
+	"github.com/larksuite/cli/internal/vfs"
 )
+
+type permissionDeniedDoctorFS struct{ vfs.FS }
+
+func (p permissionDeniedDoctorFS) ReadFile(name string) ([]byte, error) {
+	return nil, &iofs.PathError{Op: "open", Path: name, Err: iofs.ErrPermission}
+}
 
 func TestNewCmdDoctor_FlagParsing(t *testing.T) {
 	f, _, _, _ := cmdutil.TestFactory(t, &core.CliConfig{
@@ -93,5 +102,39 @@ func TestNetworkChecks_Offline(t *testing.T) {
 		if c.Status != "skip" {
 			t.Errorf("expected skip, got %s for %s", c.Status, c.Name)
 		}
+	}
+}
+
+func TestDoctorRun_ConfigPermissionDeniedIncludesRepairHint(t *testing.T) {
+	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", t.TempDir())
+	oldFS := vfs.DefaultFS
+	vfs.DefaultFS = permissionDeniedDoctorFS{FS: oldFS}
+	t.Cleanup(func() { vfs.DefaultFS = oldFS })
+
+	f, stdout, _, _ := cmdutil.TestFactory(t, nil)
+	err := doctorRun(&DoctorOptions{Factory: f, Ctx: context.Background(), Offline: true})
+	if err == nil {
+		t.Fatal("expected doctor to fail for unreadable config")
+	}
+
+	var result struct {
+		OK     bool          `json:"ok"`
+		Checks []checkResult `json:"checks"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("doctor output is not JSON: %v\n%s", err, stdout.String())
+	}
+	if result.OK {
+		t.Fatalf("expected ok=false")
+	}
+	if len(result.Checks) < 2 || result.Checks[1].Name != "config_file" {
+		t.Fatalf("expected config_file check after cli_version, got %+v", result.Checks)
+	}
+	check := result.Checks[1]
+	if !strings.Contains(check.Message, "failed to load config") || !strings.Contains(check.Message, "permission denied") {
+		t.Fatalf("message = %q, want failed load with permission denied", check.Message)
+	}
+	if !strings.Contains(check.Hint, "chmod 600") || !strings.Contains(check.Hint, "lark-cli config show") {
+		t.Fatalf("hint = %q, want permission-repair guidance", check.Hint)
 	}
 }

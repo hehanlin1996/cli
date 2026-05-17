@@ -4,9 +4,7 @@
 package config
 
 import (
-	"errors"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/larksuite/cli/internal/cmdutil"
@@ -41,12 +39,9 @@ func NewCmdConfigShow(f *cmdutil.Factory, runF func(*ConfigShowOptions) error) *
 func configShowRun(opts *ConfigShowOptions) error {
 	f := opts.Factory
 
-	config, err := core.LoadMultiAppConfig()
+	config, err := core.LoadOrNotConfigured()
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return core.NotConfiguredError()
-		}
-		return output.Errorf(output.ExitValidation, "config", "failed to load config: %v", err)
+		return err
 	}
 	if config == nil || len(config.Apps) == 0 {
 		return core.NotConfiguredError()
