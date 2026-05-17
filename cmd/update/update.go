@@ -144,7 +144,7 @@ func updateRun(opts *UpdateOptions) error {
 		if !opts.Check {
 			skillsResult = runSkillsAndStamp(updater, io, cur, opts.Force)
 		}
-		return reportAlreadyUpToDate(opts, io, cur, latest, skillsResult, opts.Check)
+		return reportAlreadyUpToDate(opts, io, updater, cur, latest, skillsResult, opts.Check)
 	}
 
 	// 4. Detect installation method
@@ -152,7 +152,7 @@ func updateRun(opts *UpdateOptions) error {
 
 	// 5. --check
 	if opts.Check {
-		return reportCheckResult(opts, io, cur, latest, detect.CanAutoUpdate())
+		return reportCheckResult(opts, io, cur, latest, detect.CanAutoUpdate(), updater)
 	}
 
 	// 6. Execute update
@@ -175,7 +175,71 @@ func reportError(opts *UpdateOptions, io *cmdutil.IOStreams, exitCode int, errTy
 	return output.Errorf(exitCode, errType, "%s", msg)
 }
 
-func reportCheckResult(opts *UpdateOptions, io *cmdutil.IOStreams, cur, latest string, canAutoUpdate bool) error {
+type pathConflictInfo struct {
+	paths   []string
+	message string
+	command string
+}
+
+func detectPathConflict(updater *selfupdate.Updater) *pathConflictInfo {
+	candidates := updater.FindPathCandidates()
+	if len(candidates) <= 1 {
+		return nil
+	}
+	paths := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		paths = append(paths, candidate.Path)
+	}
+	command := pathListCommand()
+	message := fmt.Sprintf(
+		"multiple lark-cli executables found in PATH; a new shell may run an older Homebrew/NVM/npm copy after update. Check with `%s` and remove or reorder duplicates: %s",
+		command, strings.Join(paths, ", "),
+	)
+	return &pathConflictInfo{paths: paths, message: message, command: command}
+}
+
+func pathListCommand() string {
+	if isWindows() {
+		return "where lark-cli"
+	}
+	return "which -a lark-cli"
+}
+
+func shellCacheHint() string {
+	if isWindows() {
+		return "reopen the terminal or clear the command cache in your shell"
+	}
+	return "clear the shell command cache (`hash -r` or reopen the terminal)"
+}
+
+func (p *pathConflictInfo) toJSON() map[string]interface{} {
+	return map[string]interface{}{
+		"message": p.message,
+		"command": p.command,
+		"paths":   p.paths,
+	}
+}
+
+func applyPathConflict(env map[string]interface{}, updater *selfupdate.Updater) {
+	if conflict := detectPathConflict(updater); conflict != nil {
+		env["path_conflict"] = conflict.toJSON()
+	}
+}
+
+func emitPathConflictWarning(io *cmdutil.IOStreams, updater *selfupdate.Updater) {
+	if conflict := detectPathConflict(updater); conflict != nil {
+		fmt.Fprintf(io.ErrOut, "\n%s %s\n", symWarn(), conflict.message)
+	}
+}
+
+func appendHint(base, extra string) string {
+	if strings.TrimSpace(base) == "" {
+		return extra
+	}
+	return base + "; " + extra
+}
+
+func reportCheckResult(opts *UpdateOptions, io *cmdutil.IOStreams, cur, latest string, canAutoUpdate bool, updater *selfupdate.Updater) error {
 	if opts.JSON {
 		out := map[string]interface{}{
 			"ok": true, "previous_version": cur, "current_version": cur,
@@ -194,6 +258,7 @@ func reportCheckResult(opts *UpdateOptions, io *cmdutil.IOStreams, cur, latest s
 				"in_sync": stamp == cur,
 			}
 		}
+		applyPathConflict(out, updater)
 		output.PrintJson(io.Out, out)
 		return nil
 	}
@@ -205,6 +270,7 @@ func reportCheckResult(opts *UpdateOptions, io *cmdutil.IOStreams, cur, latest s
 	} else {
 		fmt.Fprintf(io.ErrOut, "\nDownload the release above to update manually.\n")
 	}
+	emitPathConflictWarning(io, updater)
 	return nil
 }
 
@@ -220,6 +286,7 @@ func doManualUpdate(opts *UpdateOptions, io *cmdutil.IOStreams, cur, latest stri
 			"url":     releaseURL(latest), "changelog": changelogURL(),
 		}
 		applySkillsResult(out, skillsResult)
+		applyPathConflict(out, updater)
 		output.PrintJson(io.Out, out)
 		return nil
 	}
@@ -228,6 +295,7 @@ func doManualUpdate(opts *UpdateOptions, io *cmdutil.IOStreams, cur, latest stri
 	fmt.Fprintf(io.ErrOut, "  Release:   %s\n", releaseURL(latest))
 	fmt.Fprintf(io.ErrOut, "  Changelog: %s\n", changelogURL())
 	fmt.Fprintf(io.ErrOut, "\nOr install via npm (note: skills will not be synced):\n  npm install -g %s@%s\n  npx skills add larksuite/cli -y -g   # sync skills separately\n", selfupdate.NpmPackage, latest)
+	emitPathConflictWarning(io, updater)
 	emitSkillsTextHints(io, skillsResult)
 	return nil
 }
@@ -275,11 +343,20 @@ func doNpmUpdate(opts *UpdateOptions, io *cmdutil.IOStreams, cur, latest string,
 		restore()
 		msg := fmt.Sprintf("new binary verification failed: %s", err)
 		hint := verificationFailureHint(updater, latest)
+		pathConflict := detectPathConflict(updater)
+		if pathConflict != nil {
+			hint = appendHint(hint, pathConflict.message)
+		}
 		if opts.JSON {
-			output.PrintJson(io.Out, map[string]interface{}{
+			errOut := map[string]interface{}{"type": "update_error", "message": msg, "hint": hint}
+			env := map[string]interface{}{
 				"ok":    false,
-				"error": map[string]interface{}{"type": "update_error", "message": msg, "hint": hint},
-			})
+				"error": errOut,
+			}
+			if pathConflict != nil {
+				env["path_conflict"] = pathConflict.toJSON()
+			}
+			output.PrintJson(io.Out, env)
 			return output.ErrBare(output.ExitAPI)
 		}
 		fmt.Fprintf(io.ErrOut, "\n%s %s\n", symFail(), msg)
@@ -300,12 +377,14 @@ func doNpmUpdate(opts *UpdateOptions, io *cmdutil.IOStreams, cur, latest string,
 			"url":     releaseURL(latest), "changelog": changelogURL(),
 		}
 		applySkillsResult(result, skillsResult)
+		applyPathConflict(result, updater)
 		output.PrintJson(io.Out, result)
 		return nil
 	}
 
 	fmt.Fprintf(io.ErrOut, "\n%s Successfully updated lark-cli from %s to %s\n", symOK(), cur, latest)
 	fmt.Fprintf(io.ErrOut, "  Changelog: %s\n", changelogURL())
+	emitPathConflictWarning(io, updater)
 	if skillsResult != nil {
 		fmt.Fprintf(io.ErrOut, "\nUpdating skills ...\n")
 	}
@@ -321,10 +400,21 @@ func permissionHint(npmOutput string) string {
 }
 
 func verificationFailureHint(updater *selfupdate.Updater, latest string) string {
+	stalePathHint := stalePathVerificationHint(latest)
 	if updater.CanRestorePreviousVersion() {
-		return "the previous version has been restored"
+		return fmt.Sprintf("the previous version has been restored. %s", stalePathHint)
 	}
-	return fmt.Sprintf("automatic rollback is unavailable on this platform; reinstall manually (skills will not be synced): npm install -g %s@%s && npx skills add larksuite/cli -y -g, or download %s", selfupdate.NpmPackage, latest, releaseURL(latest))
+	return fmt.Sprintf(
+		"automatic rollback is unavailable on this platform; reinstall manually (skills will not be synced): npm install -g %s@%s && npx skills add larksuite/cli -y -g, or download %s. %s",
+		selfupdate.NpmPackage, latest, releaseURL(latest), stalePathHint,
+	)
+}
+
+func stalePathVerificationHint(latest string) string {
+	return fmt.Sprintf(
+		"If `lark-cli --version` already reports %s, verification may have hit a stale npm path; %s and run `%s` to check duplicate installs",
+		normalizeVersion(latest), shellCacheHint(), pathListCommand(),
+	)
 }
 
 // runSkillsAndStamp triggers updater.RunSkillsUpdate and persists the
@@ -355,7 +445,7 @@ func runSkillsAndStamp(updater *selfupdate.Updater, io *cmdutil.IOStreams, stamp
 // fields derived from skillsResult. When check is true, this is the pure
 // report path (spec §3.6): no side-effects, JSON envelope uses
 // skills_status (spec §4.2) instead of skills_action.
-func reportAlreadyUpToDate(opts *UpdateOptions, io *cmdutil.IOStreams, cur, latest string, skillsResult *selfupdate.NpmResult, check bool) error {
+func reportAlreadyUpToDate(opts *UpdateOptions, io *cmdutil.IOStreams, updater *selfupdate.Updater, cur, latest string, skillsResult *selfupdate.NpmResult, check bool) error {
 	if opts.JSON {
 		out := map[string]interface{}{
 			"ok": true, "previous_version": cur, "current_version": cur,
@@ -373,6 +463,7 @@ func reportAlreadyUpToDate(opts *UpdateOptions, io *cmdutil.IOStreams, cur, late
 					"in_sync": stamp == cur,
 				}
 			}
+			applyPathConflict(out, updater)
 		} else {
 			applySkillsResult(out, skillsResult)
 		}
@@ -380,7 +471,9 @@ func reportAlreadyUpToDate(opts *UpdateOptions, io *cmdutil.IOStreams, cur, late
 		return nil
 	}
 	fmt.Fprintf(io.ErrOut, "%s lark-cli %s is already up to date\n", symOK(), cur)
-	if !check {
+	if check {
+		emitPathConflictWarning(io, updater)
+	} else {
 		emitSkillsTextHints(io, skillsResult)
 	}
 	return nil

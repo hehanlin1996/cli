@@ -10,7 +10,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -47,6 +50,14 @@ type DetectResult struct {
 	Method       InstallMethod
 	ResolvedPath string
 	NpmAvailable bool
+}
+
+// PathCandidate describes one lark-cli command found while scanning PATH.
+// Path is the command path the shell may execute; ResolvedPath follows
+// symlinks when resolution succeeds and is empty otherwise.
+type PathCandidate struct {
+	Path         string
+	ResolvedPath string
 }
 
 // CanAutoUpdate returns true if the CLI can update itself automatically.
@@ -128,6 +139,60 @@ func (u *Updater) DetectInstallMethod() DetectResult {
 		ResolvedPath: resolved,
 		NpmAvailable: npmAvailable,
 	}
+}
+
+// FindPathCandidates returns every executable named lark-cli that is visible
+// through PATH, in PATH order. It intentionally does not execute candidates;
+// callers use this for diagnostics only.
+func (u *Updater) FindPathCandidates() []PathCandidate {
+	return findPathCandidates(os.Getenv("PATH"), runtime.GOOS)
+}
+
+func findPathCandidates(pathValue, goos string) []PathCandidate {
+	if strings.TrimSpace(pathValue) == "" {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	candidates := []PathCandidate{}
+	for _, dir := range filepath.SplitList(pathValue) {
+		if dir == "" {
+			continue
+		}
+		for _, name := range larkCLIExecutableNames(goos) {
+			path := filepath.Join(dir, name)
+			if _, ok := seen[path]; ok {
+				continue
+			}
+			if !isExecutablePath(path, goos) {
+				continue
+			}
+			seen[path] = struct{}{}
+			candidate := PathCandidate{Path: path}
+			if resolved, err := vfs.EvalSymlinks(path); err == nil && resolved != path {
+				candidate.ResolvedPath = resolved
+			}
+			candidates = append(candidates, candidate)
+		}
+	}
+	return candidates
+}
+
+func larkCLIExecutableNames(goos string) []string {
+	if goos == "windows" {
+		return []string{"lark-cli.exe", "lark-cli.cmd", "lark-cli.bat", "lark-cli"}
+	}
+	return []string{"lark-cli"}
+}
+
+func isExecutablePath(path, goos string) bool {
+	info, err := vfs.Stat(path)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	if goos == "windows" {
+		return true
+	}
+	return info.Mode().Perm()&0o111 != 0
 }
 
 // RunNpmInstall executes npm install -g @larksuite/cli@<version>.

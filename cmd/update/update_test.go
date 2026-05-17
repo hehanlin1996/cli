@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -25,6 +26,76 @@ func newTestFactory(t *testing.T) (*cmdutil.Factory, *bytes.Buffer, *bytes.Buffe
 	t.Helper()
 	f, stdout, stderr, _ := cmdutil.TestFactory(t, &core.CliConfig{})
 	return f, stdout, stderr
+}
+
+func makeTestPathCandidates(t *testing.T) []string {
+	t.Helper()
+	oldPath := os.Getenv("PATH")
+	t.Cleanup(func() { _ = os.Setenv("PATH", oldPath) })
+
+	exeName := "lark-cli"
+	content := []byte("#!/bin/sh\necho 'lark-cli version 1.0.0'\n")
+	if runtime.GOOS == osWindows {
+		exeName = "lark-cli.cmd"
+		content = []byte("@echo off\r\necho lark-cli version 1.0.0\r\n")
+	}
+
+	dirs := make([]string, 0, 2)
+	paths := make([]string, 0, 2)
+	for i := 0; i < 2; i++ {
+		dir := t.TempDir()
+		bin := filepath.Join(dir, exeName)
+		if err := os.WriteFile(bin, content, 0o755); err != nil {
+			t.Fatalf("write test lark-cli candidate: %v", err)
+		}
+		dirs = append(dirs, dir)
+		paths = append(paths, bin)
+	}
+	_ = os.Setenv("PATH", strings.Join(append(dirs, oldPath), string(os.PathListSeparator)))
+	return paths
+}
+
+func decodeJSONEnvelope(t *testing.T, stdout *bytes.Buffer) map[string]interface{} {
+	t.Helper()
+	var env map[string]interface{}
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal JSON envelope: %v\n%s", err, stdout.String())
+	}
+	return env
+}
+
+func assertPathConflictJSON(t *testing.T, env map[string]interface{}, paths []string) map[string]interface{} {
+	t.Helper()
+	conflict, ok := env["path_conflict"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("path_conflict missing or wrong type: %+v", env)
+	}
+	if command, _ := conflict["command"].(string); command != pathListCommand() {
+		t.Errorf("path_conflict.command = %q, want %q", command, pathListCommand())
+	}
+	gotPaths, ok := conflict["paths"].([]interface{})
+	if !ok || len(gotPaths) < len(paths) {
+		t.Fatalf("path_conflict.paths = %#v, want at least %d paths", conflict["paths"], len(paths))
+	}
+	for _, want := range paths {
+		found := false
+		for _, got := range gotPaths {
+			if got == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("expected path_conflict.paths to contain %q, got %#v", want, gotPaths)
+		}
+	}
+	msg, _ := conflict["message"].(string)
+	if !strings.Contains(msg, "multiple lark-cli executables found in PATH") {
+		t.Errorf("path_conflict.message = %q", msg)
+	}
+	if !strings.Contains(msg, pathListCommand()) {
+		t.Errorf("path_conflict.message does not include %q: %q", pathListCommand(), msg)
+	}
+	return conflict
 }
 
 // mockDetect sets up newUpdater to return an Updater with the given DetectResult.
@@ -547,6 +618,220 @@ func TestUpdateCheck_Human_Npm(t *testing.T) {
 	}
 }
 
+func TestUpdateCheck_HumanWarnsOnMultiplePathCandidates(t *testing.T) {
+	paths := makeTestPathCandidates(t)
+	f, _, stderr := newTestFactory(t)
+	cmd := NewCmdUpdate(f)
+	cmd.SetArgs([]string{"--check"})
+
+	origFetch := fetchLatest
+	fetchLatest = func() (string, error) { return "2.0.0", nil }
+	defer func() { fetchLatest = origFetch }()
+	origVersion := currentVersion
+	currentVersion = func() string { return "1.0.0" }
+	defer func() { currentVersion = origVersion }()
+	mockDetect(t, selfupdate.DetectResult{Method: selfupdate.InstallNpm, ResolvedPath: paths[0], NpmAvailable: true})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := stderr.String()
+	for _, want := range []string{"multiple lark-cli executables found in PATH", pathListCommand(), paths[0], paths[1]} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in path warning, got: %s", want, out)
+		}
+	}
+}
+
+func TestUpdateCheck_JSONIncludesPathConflict(t *testing.T) {
+	paths := makeTestPathCandidates(t)
+	f, stdout, _ := newTestFactory(t)
+	cmd := NewCmdUpdate(f)
+	cmd.SetArgs([]string{"--json", "--check"})
+
+	origFetch := fetchLatest
+	fetchLatest = func() (string, error) { return "2.0.0", nil }
+	defer func() { fetchLatest = origFetch }()
+	origVersion := currentVersion
+	currentVersion = func() string { return "1.0.0" }
+	defer func() { currentVersion = origVersion }()
+	mockDetect(t, selfupdate.DetectResult{Method: selfupdate.InstallNpm, ResolvedPath: paths[0], NpmAvailable: true})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	env := decodeJSONEnvelope(t, stdout)
+	assertPathConflictJSON(t, env, paths)
+}
+
+func TestUpdateCheckAlreadyUpToDate_JSONIncludesPathConflict(t *testing.T) {
+	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", t.TempDir())
+	paths := makeTestPathCandidates(t)
+	f, stdout, _ := newTestFactory(t)
+	cmd := NewCmdUpdate(f)
+	cmd.SetArgs([]string{"--json", "--check"})
+
+	origFetch := fetchLatest
+	fetchLatest = func() (string, error) { return "1.0.0", nil }
+	defer func() { fetchLatest = origFetch }()
+	origVersion := currentVersion
+	currentVersion = func() string { return "1.0.0" }
+	defer func() { currentVersion = origVersion }()
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	env := decodeJSONEnvelope(t, stdout)
+	if env["action"] != "already_up_to_date" {
+		t.Fatalf("action = %v, want already_up_to_date; env=%+v", env["action"], env)
+	}
+	assertPathConflictJSON(t, env, paths)
+}
+
+func TestUpdateCheckAlreadyUpToDate_HumanWarnsOnMultiplePathCandidates(t *testing.T) {
+	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", t.TempDir())
+	paths := makeTestPathCandidates(t)
+	f, _, stderr := newTestFactory(t)
+	cmd := NewCmdUpdate(f)
+	cmd.SetArgs([]string{"--check"})
+
+	origFetch := fetchLatest
+	fetchLatest = func() (string, error) { return "1.0.0", nil }
+	defer func() { fetchLatest = origFetch }()
+	origVersion := currentVersion
+	currentVersion = func() string { return "1.0.0" }
+	defer func() { currentVersion = origVersion }()
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := stderr.String()
+	for _, want := range []string{"already up to date", "multiple lark-cli executables found in PATH", pathListCommand(), paths[0], paths[1]} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in stderr, got: %s", want, out)
+		}
+	}
+}
+
+func TestUpdateManual_JSONIncludesPathConflict(t *testing.T) {
+	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", t.TempDir())
+	paths := makeTestPathCandidates(t)
+	f, stdout, _ := newTestFactory(t)
+	cmd := NewCmdUpdate(f)
+	cmd.SetArgs([]string{"--json"})
+
+	origFetch := fetchLatest
+	fetchLatest = func() (string, error) { return "2.0.0", nil }
+	defer func() { fetchLatest = origFetch }()
+	origVersion := currentVersion
+	currentVersion = func() string { return "1.0.0" }
+	defer func() { currentVersion = origVersion }()
+
+	origNew := newUpdater
+	newUpdater = func() *selfupdate.Updater {
+		u := selfupdate.New()
+		u.DetectOverride = func() selfupdate.DetectResult {
+			return selfupdate.DetectResult{Method: selfupdate.InstallManual, ResolvedPath: paths[0]}
+		}
+		u.SkillsUpdateOverride = func() *selfupdate.NpmResult { return &selfupdate.NpmResult{} }
+		return u
+	}
+	defer func() { newUpdater = origNew }()
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	env := decodeJSONEnvelope(t, stdout)
+	if env["action"] != "manual_required" {
+		t.Fatalf("action = %v, want manual_required; env=%+v", env["action"], env)
+	}
+	assertPathConflictJSON(t, env, paths)
+}
+
+func TestUpdateNpm_JSONIncludesPathConflict(t *testing.T) {
+	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", t.TempDir())
+	paths := makeTestPathCandidates(t)
+	f, stdout, _ := newTestFactory(t)
+	cmd := NewCmdUpdate(f)
+	cmd.SetArgs([]string{"--json"})
+
+	origFetch := fetchLatest
+	fetchLatest = func() (string, error) { return "2.0.0", nil }
+	defer func() { fetchLatest = origFetch }()
+	origVersion := currentVersion
+	currentVersion = func() string { return "1.0.0" }
+	defer func() { currentVersion = origVersion }()
+	mockDetectAndNpm(t,
+		selfupdate.DetectResult{Method: selfupdate.InstallNpm, ResolvedPath: paths[0], NpmAvailable: true},
+		func(version string) *selfupdate.NpmResult { return &selfupdate.NpmResult{} },
+		func() *selfupdate.NpmResult { return &selfupdate.NpmResult{} },
+	)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	env := decodeJSONEnvelope(t, stdout)
+	if env["action"] != "updated" {
+		t.Fatalf("action = %v, want updated; env=%+v", env["action"], env)
+	}
+	assertPathConflictJSON(t, env, paths)
+}
+
+func TestUpdateNpmVerifyFail_JSONIncludesTopLevelPathConflict(t *testing.T) {
+	paths := makeTestPathCandidates(t)
+	f, stdout, _ := newTestFactory(t)
+	cmd := NewCmdUpdate(f)
+	cmd.SetArgs([]string{"--json"})
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+
+	origFetch := fetchLatest
+	fetchLatest = func() (string, error) { return "2.0.0", nil }
+	defer func() { fetchLatest = origFetch }()
+	origVersion := currentVersion
+	currentVersion = func() string { return "1.0.0" }
+	defer func() { currentVersion = origVersion }()
+
+	origNew := newUpdater
+	newUpdater = func() *selfupdate.Updater {
+		u := selfupdate.New()
+		u.DetectOverride = func() selfupdate.DetectResult {
+			return selfupdate.DetectResult{Method: selfupdate.InstallNpm, ResolvedPath: paths[0], NpmAvailable: true}
+		}
+		u.NpmInstallOverride = func(version string) *selfupdate.NpmResult { return &selfupdate.NpmResult{} }
+		u.VerifyOverride = func(string) error { return errors.New("bad binary") }
+		u.RestoreAvailableOverride = func() bool { return false }
+		u.SkillsUpdateOverride = func() *selfupdate.NpmResult {
+			t.Fatal("skills update should not run when binary verification fails")
+			return nil
+		}
+		return u
+	}
+	defer func() { newUpdater = origNew }()
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected verification failure")
+	}
+	var exitErr *output.ExitError
+	if !errors.As(err, &exitErr) || exitErr.Code != output.ExitAPI {
+		t.Fatalf("expected ExitAPI error, got %T: %v", err, err)
+	}
+
+	env := decodeJSONEnvelope(t, stdout)
+	if env["ok"] != false {
+		t.Fatalf("ok = %v, want false; env=%+v", env["ok"], env)
+	}
+	errObj, ok := env["error"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("error missing or wrong type: %+v", env)
+	}
+	if _, nested := errObj["path_conflict"]; nested {
+		t.Fatalf("path_conflict should be top-level, not nested under error: %+v", errObj)
+	}
+	assertPathConflictJSON(t, env, paths)
+}
+
 func TestUpdateCheck_Human_Manual(t *testing.T) {
 	f, _, stderr := newTestFactory(t)
 	cmd := NewCmdUpdate(f)
@@ -644,6 +929,39 @@ func TestPermissionHint(t *testing.T) {
 	currentOS = "linux"
 	if got := permissionHint("some other error"); got != "" {
 		t.Errorf("expected empty hint for non-EACCES, got: %s", got)
+	}
+}
+
+func TestVerificationFailureHintExplainsStaleNpmPath(t *testing.T) {
+	origOS := currentOS
+	currentOS = "linux"
+	t.Cleanup(func() { currentOS = origOS })
+
+	u := selfupdate.New()
+	u.RestoreAvailableOverride = func() bool { return false }
+	got := verificationFailureHint(u, "2.0.0")
+	for _, want := range []string{"lark-cli --version", "stale npm", "hash -r", pathListCommand()} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected %q in verification hint, got: %s", want, got)
+		}
+	}
+}
+
+func TestVerificationFailureHintExplainsStaleNpmPathAfterRestore(t *testing.T) {
+	origOS := currentOS
+	currentOS = "linux"
+	t.Cleanup(func() { currentOS = origOS })
+
+	u := selfupdate.New()
+	u.RestoreAvailableOverride = func() bool { return true }
+	got := verificationFailureHint(u, "2.0.0")
+	for _, want := range []string{"previous version has been restored", "lark-cli --version", "stale npm", "hash -r", pathListCommand()} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected %q in verification hint, got: %s", want, got)
+		}
+	}
+	if strings.Contains(got, "automatic rollback is unavailable") {
+		t.Errorf("restore-available hint should not claim rollback is unavailable: %s", got)
 	}
 }
 
