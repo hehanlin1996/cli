@@ -8,7 +8,7 @@
 
 The official [Lark/Feishu](https://www.larksuite.com/) CLI tool, maintained by the [larksuite](https://github.com/larksuite) team — built for humans and AI Agents. Covers core business domains including Messenger, Docs, Base, Sheets, Slides, Calendar, Mail, Tasks, Meetings, Markdown, and more, with 200+ commands and 24 AI Agent [Skills](./skills/).
 
-[Install](#installation--quick-start) · [AI Agent Skills](#agent-skills) · [Auth](#authentication) · [Commands](#three-layer-command-system) · [Advanced](#advanced-usage) · [Security](#security--risk-warnings-read-before-use) · [Contributing](#contributing)
+[Install](#installation--quick-start) · [AI Agent Skills](#agent-skills) · [Agent Hosts](#agent-host-support-matrix) · [Auth](#authentication) · [Commands](#three-layer-command-system) · [Advanced](#advanced-usage) · [Security](#security--risk-warnings-read-before-use) · [Contributing](#contributing)
 
 ## Why lark-cli?
 
@@ -94,6 +94,7 @@ lark-cli calendar +agenda
 ## Quick Start (AI Agent)
 
 > The following steps are for AI Agents. Some steps require the user to complete actions in a browser.
+> If the agent is running inside OpenClaw, Hermes, or Lark Channel and the user wants to reuse host-injected credentials, use `lark-cli config bind --source ...` from [Agent Host Support Matrix](#agent-host-support-matrix) instead of creating a separate app with `config init --new`.
 
 **Step 1 — Install**
 
@@ -151,6 +152,57 @@ lark-cli auth status
 | `lark-workflow-meeting-summary` | Workflow: meeting minutes aggregation & structured report                                                      |
 | `lark-workflow-standup-report`  | Workflow: agenda & todo summary                                                                                |
 | `lark-okr`                      | Query, create, update OKRs; manage objective & key results, alignments and indicators.                         |
+
+## Agent Host Support Matrix
+
+`lark-cli` is a local command-line tool. Any host that can run shell commands — Claude Code, Cursor, Gemini CLI, OpenCode, QwenPaw, or a plain terminal — can invoke it. The special OpenClaw / Hermes / Lark Channel integration is credential bootstrapping only: `lark-cli config bind` reads app credentials injected by those hosts and writes a normal lark-cli profile. Skills and MCP can still be useful in hosts that support them, but neither is required to use the CLI.
+
+| Host | Credential path | Recommended integration (CLI vs Skill vs MCP) | Notes |
+| ---- | --------------- | --------------------------------------------- | ----- |
+| OpenClaw | `OPENCLAW_CONFIG_PATH`, or `OPENCLAW_STATE_DIR` / `OPENCLAW_HOME`, falling back to `~/.openclaw/openclaw.json` (legacy: `~/.clawdbot/clawdbot.json`) | CLI via `lark-cli config bind --source openclaw`; Skill optional; MCP not required | Confirm with the user before binding. For personal resources such as Calendar, choose or configure user identity, for example `--identity user-default`, then run `lark-cli auth login --domain calendar`. |
+| Hermes | `${HERMES_HOME:-~/.hermes}/.env` (`FEISHU_APP_ID`, `FEISHU_APP_SECRET`) | CLI via `lark-cli config bind --source hermes`; Skill optional; MCP not required | `--source` can be auto-detected in a Hermes subprocess. Personal Calendar access still needs user identity and `lark-cli auth login --domain calendar`. |
+| Lark Channel | `~/.lark-channel/config.json` | CLI via `lark-cli config bind --source lark-channel`; Skill optional; MCP not required | Uses the bridge app credential. Personal resources still require user identity and domain authorization. |
+| Claude Code / Cursor / Gemini CLI | No host credential path; use lark-cli local config at `${LARKSUITE_CLI_CONFIG_DIR:-~/.lark-cli}/config.json` | CLI directly; install Skills when the host supports them; MCP optional | Use `lark-cli config init` or `lark-cli profile add` to configure credentials, then authorize the required domains. |
+| OpenCode | No automatic credential injection today; use lark-cli local config | CLI directly; Skill / MCP only if your host setup supports them | Use `lark-cli config init` or `lark-cli profile add`, then run domain authorization such as `lark-cli auth login --domain calendar`. |
+| QwenPaw | No automatic credential injection today; use lark-cli local config | CLI directly; Skill / MCP only if your host setup supports them | Use `lark-cli config init` or `lark-cli profile add`, then run domain authorization such as `lark-cli auth login --domain calendar`. |
+| Plain terminal / scripts | No host credential path; use lark-cli local config | CLI directly | Suitable for humans and automation. Configure once with `lark-cli config init` or add a named profile with `lark-cli profile add`. |
+
+### Calendar read/write recipe
+
+These commands work from any host that can run the CLI. Calendar access is not MCP-only and not Skill-only; Skills are a packaging layer for agent instructions, while the CLI commands below are the execution path.
+
+**OpenClaw / Hermes / Lark Channel (bind host-injected app credentials):**
+
+```bash
+# Pick the matching source. Inside supported hosts, --source may be auto-detected.
+# Use user identity only after the user confirms personal Calendar access.
+lark-cli config bind --source openclaw --identity user-default
+# or: lark-cli config bind --source hermes --identity user-default
+# or: lark-cli config bind --source lark-channel --identity user-default
+
+lark-cli auth login --domain calendar
+lark-cli calendar +agenda --format pretty
+lark-cli calendar +create \
+  --summary "Product review" \
+  --start "2026-03-12T14:00+08:00" \
+  --end "2026-03-12T15:00+08:00"
+```
+
+**OpenCode / QwenPaw / plain terminal (manual app credentials):**
+
+```bash
+lark-cli config init
+# or, for scripted profile creation without echoing the secret:
+printf '<APP_SECRET>\n' | lark-cli profile add \
+  --name work --app-id <APP_ID> --app-secret-stdin --use
+
+lark-cli auth login --domain calendar
+lark-cli calendar +agenda --format pretty
+lark-cli calendar +create \
+  --summary "Product review" \
+  --start "2026-03-12T14:00+08:00" \
+  --end "2026-03-12T15:00+08:00"
+```
 
 ## Authentication
 

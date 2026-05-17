@@ -8,7 +8,7 @@
 
 飞书官方 CLI 工具，由 [larksuite](https://github.com/larksuite) 团队维护 — 让人类和 AI Agent 都能在终端中操作飞书。覆盖消息、文档、多维表格、电子表格、幻灯片、日历、邮箱、任务、会议、Markdown 等核心业务域，提供 200+ 命令及 24 个 AI Agent [Skills](./skills/)。
 
-[安装](#安装与快速开始) · [AI Agent Skills](#agent-skills) · [认证](#认证) · [命令](#三层命令调用) · [进阶用法](#进阶用法) · [安全](#安全与风险提示使用前必读) · [贡献](#贡献)
+[安装](#安装与快速开始) · [AI Agent Skills](#agent-skills) · [Agent 宿主](#agent-宿主支持矩阵) · [认证](#认证) · [命令](#三层命令调用) · [进阶用法](#进阶用法) · [安全](#安全与风险提示使用前必读) · [贡献](#贡献)
 
 ## 为什么选 lark-cli？
 
@@ -94,6 +94,7 @@ lark-cli calendar +agenda
 ### 快速开始（AI Agent）
 
 > 以下步骤面向 AI Agent，部分步骤需要用户在浏览器中配合完成。
+> 如果 Agent 运行在 OpenClaw、Hermes 或 Lark Channel 中，且用户希望复用宿主注入的凭证，请优先参考 [Agent 宿主支持矩阵](#agent-宿主支持矩阵)，用 `lark-cli config bind --source ...` 绑定，而不是用 `config init --new` 创建一套独立应用。
 
 **第 1 步 — 安装**
 
@@ -152,6 +153,57 @@ lark-cli auth status
 | `lark-workflow-meeting-summary` | 工作流：会议纪要汇总与结构化报告                          |
 | `lark-workflow-standup-report`  | 工作流：日程待办摘要                                |
 | `lark-okr`                      | 查询、创建、更新 OKR，管理目标、关键结果、对齐、指标和进展记录         |
+
+## Agent 宿主支持矩阵
+
+`lark-cli` 是本地命令行工具。任何能运行 shell 命令的宿主——Claude Code、Cursor、Gemini CLI、OpenCode、QwenPaw 或普通终端——都可以调用它。OpenClaw / Hermes / Lark Channel 的特殊集成仅用于凭证引导：`lark-cli config bind` 会读取这些宿主注入的应用凭证，并写入正常的 lark-cli profile。Skill 和 MCP 可以在支持它们的宿主中继续使用，但不是调用 CLI 的必要条件。
+
+| Host | credential path | recommended integration（CLI vs Skill vs MCP） | notes |
+| ---- | --------------- | ---------------------------------------------- | ----- |
+| OpenClaw | `OPENCLAW_CONFIG_PATH`，或 `OPENCLAW_STATE_DIR` / `OPENCLAW_HOME`，默认回退到 `~/.openclaw/openclaw.json`（旧路径：`~/.clawdbot/clawdbot.json`） | 通过 `lark-cli config bind --source openclaw` 使用 CLI；Skill 可选；不要求 MCP | 绑定前需用户确认。访问个人资源（如日历）时，选择或配置 user identity，例如 `--identity user-default`，然后执行 `lark-cli auth login --domain calendar`。 |
+| Hermes | `${HERMES_HOME:-~/.hermes}/.env`（`FEISHU_APP_ID`、`FEISHU_APP_SECRET`） | 通过 `lark-cli config bind --source hermes` 使用 CLI；Skill 可选；不要求 MCP | 在 Hermes 子进程中可自动检测 `--source`。访问个人日历仍需 user identity 和 `lark-cli auth login --domain calendar`。 |
+| Lark Channel | `~/.lark-channel/config.json` | 通过 `lark-cli config bind --source lark-channel` 使用 CLI；Skill 可选；不要求 MCP | 读取 bridge 的应用凭证。访问个人资源仍需 user identity 和按 domain 授权。 |
+| Claude Code / Cursor / Gemini CLI | 无宿主凭证路径；使用 lark-cli 本地配置 `${LARKSUITE_CLI_CONFIG_DIR:-~/.lark-cli}/config.json` | 直接调用 CLI；宿主支持 Skill 时可安装 Skill；MCP 可选 | 使用 `lark-cli config init` 或 `lark-cli profile add` 手动配置，再按需授权业务域。 |
+| OpenCode | 目前无自动凭证注入；使用 lark-cli 本地配置 | 直接调用 CLI；Skill / MCP 取决于你的宿主环境是否支持 | 使用 `lark-cli config init` 或 `lark-cli profile add` 手动配置，然后执行如 `lark-cli auth login --domain calendar` 的业务域授权。 |
+| QwenPaw | 目前无自动凭证注入；使用 lark-cli 本地配置 | 直接调用 CLI；Skill / MCP 取决于你的宿主环境是否支持 | 使用 `lark-cli config init` 或 `lark-cli profile add` 手动配置，然后执行如 `lark-cli auth login --domain calendar` 的业务域授权。 |
+| 普通终端 / 脚本 | 无宿主凭证路径；使用 lark-cli 本地配置 | 直接调用 CLI | 适合人类和自动化脚本。用 `lark-cli config init` 配置一次，或用 `lark-cli profile add` 添加命名 profile。 |
+
+### 日历读写 recipe
+
+以下命令可在任何能运行 CLI 的宿主中执行。日历读写不是 MCP-only，也不是 Skill-only；Skill 只是 Agent 指令打包层，下面的 CLI 命令才是实际执行路径。
+
+**OpenClaw / Hermes / Lark Channel（绑定宿主注入的应用凭证）：**
+
+```bash
+# 选择匹配的 source；在受支持宿主中，--source 也可以自动检测。
+# 只有在用户确认允许访问个人日历后，才使用 user identity。
+lark-cli config bind --source openclaw --identity user-default
+# 或：lark-cli config bind --source hermes --identity user-default
+# 或：lark-cli config bind --source lark-channel --identity user-default
+
+lark-cli auth login --domain calendar
+lark-cli calendar +agenda --format pretty
+lark-cli calendar +create \
+  --summary "产品评审" \
+  --start "2026-03-12T14:00+08:00" \
+  --end "2026-03-12T15:00+08:00"
+```
+
+**OpenCode / QwenPaw / 普通终端（手动配置应用凭证）：**
+
+```bash
+lark-cli config init
+# 或者在脚本中创建 profile，避免把 secret 回显到终端：
+printf '<APP_SECRET>\n' | lark-cli profile add \
+  --name work --app-id <APP_ID> --app-secret-stdin --use
+
+lark-cli auth login --domain calendar
+lark-cli calendar +agenda --format pretty
+lark-cli calendar +create \
+  --summary "产品评审" \
+  --start "2026-03-12T14:00+08:00" \
+  --end "2026-03-12T15:00+08:00"
+```
 
 ## 认证
 
