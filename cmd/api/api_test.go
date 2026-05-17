@@ -114,6 +114,65 @@ func TestApiCmd_InvalidParamsJSON(t *testing.T) {
 	}
 }
 
+func TestApiCmd_LegacyInvokeAPIFlagHasActionableHint(t *testing.T) {
+	f, _, _, _ := cmdutil.TestFactory(t, &core.CliConfig{
+		AppID: "test-app", AppSecret: "test-secret", Brand: core.BrandFeishu,
+	})
+
+	cmd := NewCmdApi(f, nil)
+	cmd.SetArgs([]string{
+		"+invoke",
+		"--api", "knowledge_base.kpoint_search_v1",
+		"--data", `{"query":"secboot"}`,
+		"--dry-run",
+	})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected actionable error for legacy --api syntax")
+	}
+
+	var exitErr *output.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected *output.ExitError, got %T: %v", err, err)
+	}
+	if exitErr.Code != output.ExitValidation {
+		t.Fatalf("exit code = %d, want %d", exitErr.Code, output.ExitValidation)
+	}
+	if exitErr.Detail == nil {
+		t.Fatal("expected structured error detail")
+	}
+	if !strings.Contains(exitErr.Detail.Message, "api +invoke --api") {
+		t.Fatalf("message = %q, want legacy syntax mention", exitErr.Detail.Message)
+	}
+	if !strings.Contains(exitErr.Detail.Hint, "lark-cli api <METHOD> <PATH>") {
+		t.Fatalf("hint = %q, want raw API usage", exitErr.Detail.Hint)
+	}
+	if !strings.Contains(exitErr.Detail.Hint, "lark-cli schema <service.resource.method>") {
+		t.Fatalf("hint = %q, want schema discovery usage", exitErr.Detail.Hint)
+	}
+}
+
+func TestApiCmd_LegacyInvokeMethodHasActionableHint(t *testing.T) {
+	f, _, _, _ := cmdutil.TestFactory(t, &core.CliConfig{
+		AppID: "test-app", AppSecret: "test-secret", Brand: core.BrandFeishu,
+	})
+
+	cmd := NewCmdApi(f, nil)
+	cmd.SetArgs([]string{"+invoke", "knowledge_base.kpoint_search_v1", "--dry-run"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected actionable error for legacy +invoke method")
+	}
+
+	var exitErr *output.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected *output.ExitError, got %T: %v", err, err)
+	}
+	if exitErr.Detail == nil || !strings.Contains(exitErr.Detail.Hint, "lark-cli api <METHOD> <PATH>") {
+		t.Fatalf("expected raw API usage hint, got detail=%+v", exitErr.Detail)
+	}
+}
+
 func TestApiValidArgsFunction(t *testing.T) {
 	f, _, _, _ := cmdutil.TestFactory(t, &core.CliConfig{
 		AppID: "test-app", AppSecret: "test-secret", Brand: core.BrandFeishu,

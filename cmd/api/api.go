@@ -55,6 +55,16 @@ func normalisePath(raw string) string {
 	return validate.StripQueryFragment(raw)
 }
 
+func isLegacyAPIInvokeFlagError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "unknown flag: --api")
+}
+
+func legacyAPIInvokeSyntaxError() *output.ExitError {
+	return output.ErrWithHint(output.ExitValidation, "validation",
+		"unsupported legacy syntax: api +invoke --api is not a lark-cli command",
+		"Use raw OpenAPI syntax: `lark-cli api <METHOD> <PATH> --params '<json>' --data '<json>'`. For registered APIs, inspect `lark-cli schema <service.resource.method>` then call `lark-cli <service> <resource> <method>`. If no registered schema or public /open-apis path exists, the capability is outside lark-cli and requires product/OpenAPI support.")
+}
+
 // NewCmdApi creates the api command. If runF is non-nil it is called instead of apiRun (test hook).
 func NewCmdApi(f *cmdutil.Factory, runF func(*APIOptions) error) *cobra.Command {
 	return NewCmdApiWithContext(context.Background(), f, runF)
@@ -65,10 +75,14 @@ func NewCmdApiWithContext(ctx context.Context, f *cmdutil.Factory, runF func(*AP
 	var asStr string
 
 	cmd := &cobra.Command{
-		Use:   "api <method> <path>",
-		Short: "Generic Lark API requests",
-		Args:  cobra.ExactArgs(2),
+		Use:          "api <method> <path>",
+		Short:        "Generic Lark API requests",
+		Args:         cobra.ExactArgs(2),
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if strings.EqualFold(args[0], "+invoke") {
+				return legacyAPIInvokeSyntaxError()
+			}
 			opts.Method = strings.ToUpper(args[0])
 			opts.Path = args[1]
 			opts.Cmd = cmd
@@ -80,6 +94,12 @@ func NewCmdApiWithContext(ctx context.Context, f *cmdutil.Factory, runF func(*AP
 			return apiRun(opts)
 		},
 	}
+	cmd.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
+		if isLegacyAPIInvokeFlagError(err) {
+			return legacyAPIInvokeSyntaxError()
+		}
+		return err
+	})
 
 	cmd.Flags().StringVar(&opts.Params, "params", "", "query parameters JSON (supports - for stdin, @file for file input)")
 	cmd.Flags().StringVar(&opts.Data, "data", "", "request body JSON (supports - for stdin, @file for file input)")
