@@ -45,6 +45,41 @@ func docsUpdateWarnings(mode, markdown string) []string {
 	return warnings
 }
 
+// docsUpdateV2MarkdownGuardrailWarnings returns non-blocking guardrail warnings
+// for Doc v2 Markdown writes. The v2 Markdown surface is intentionally a
+// lightweight text representation; it cannot promise to preserve every style
+// attribute or rich-block property that exists in a Docx document.
+func docsUpdateV2MarkdownGuardrailWarnings(command, docFormat, content string) []string {
+	if strings.ToLower(strings.TrimSpace(docFormat)) != "markdown" {
+		return nil
+	}
+	cmd := strings.TrimSpace(command)
+	if !docsUpdateV2CommandWritesContent(cmd, content) {
+		return nil
+	}
+
+	warnings := []string{
+		"Markdown v2 update is text-oriented and does not guarantee high-fidelity preservation of style attributes (for example callout emoji/background/border/colors) or rich block properties; use XML (--doc-format xml) for high-fidelity edits.",
+	}
+	if cmd == "overwrite" {
+		warnings = append(warnings,
+			"--command overwrite replaces the entire document body and title semantics; it can remove images, whiteboards, attachments, and embedded blocks that are not represented in --content. Prefer block_* local updates after docs +fetch --api-version v2 --doc-format xml --detail full (fetch with ids).")
+	}
+	return warnings
+}
+
+func docsUpdateV2CommandWritesContent(command, content string) bool {
+	if content == "" {
+		return false
+	}
+	switch command {
+	case "overwrite", "block_replace", "block_insert_after", "append", "str_replace":
+		return true
+	default:
+		return false
+	}
+}
+
 // checkDocsUpdateReplaceMultilineMarkdown flags markdown that contains a
 // blank-line paragraph break outside fenced code blocks under a replace_*
 // mode. Blank lines inside code fences are literal content and don't

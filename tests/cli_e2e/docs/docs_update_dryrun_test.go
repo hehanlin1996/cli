@@ -11,6 +11,7 @@ import (
 
 	clie2e "github.com/larksuite/cli/tests/cli_e2e"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // TestDocs_UpdateDryRunSuppressesSemanticWarnings asserts the contract that
@@ -67,4 +68,43 @@ func TestDocs_UpdateDryRunSuppressesSemanticWarnings(t *testing.T) {
 				needle, result.Stdout, result.Stderr)
 		}
 	}
+}
+
+func TestDocs_UpdateV2MarkdownDryRunIncludesGuardrailWarnings(t *testing.T) {
+	// Fake creds are enough — dry-run short-circuits before any real API call.
+	t.Setenv("LARKSUITE_CLI_APP_ID", "app")
+	t.Setenv("LARKSUITE_CLI_APP_SECRET", "secret")
+	t.Setenv("LARKSUITE_CLI_BRAND", "feishu")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+
+	result, err := clie2e.RunCmd(ctx, clie2e.Request{
+		Args: []string{
+			"docs", "+update",
+			"--doc", "doxcnDryRunV2Guardrail",
+			"--api-version", "v2",
+			"--doc-format", "markdown",
+			"--command", "overwrite",
+			"--content", "# Replacement\n\nMarkdown payload",
+			"--dry-run",
+		},
+		DefaultAs: "bot",
+	})
+	require.NoError(t, err)
+	result.AssertExitCode(t, 0)
+
+	warnings := gjson.Get(result.Stdout, "warnings")
+	require.True(t, warnings.IsArray(), "stdout missing warnings array:\n%s", result.Stdout)
+	require.Len(t, warnings.Array(), 2, "stdout:\n%s", result.Stdout)
+
+	combinedWarnings := warnings.String()
+	for _, needle := range []string{"Markdown v2", "XML", "overwrite", "block_*", "fetch with ids"} {
+		if !strings.Contains(combinedWarnings, needle) {
+			t.Errorf("dry-run warnings missing %q\nstdout:\n%s\nstderr:\n%s", needle, result.Stdout, result.Stderr)
+		}
+	}
+
+	require.Equal(t, "markdown", gjson.Get(result.Stdout, "api.0.body.format").String(), "stdout:\n%s", result.Stdout)
+	require.Equal(t, "overwrite", gjson.Get(result.Stdout, "api.0.body.command").String(), "stdout:\n%s", result.Stdout)
 }

@@ -111,15 +111,20 @@ func dryRunUpdateV2(_ context.Context, runtime *common.RuntimeContext) *common.D
 	ref, _ := parseDocumentRef(runtime.Str("doc"))
 	body := buildUpdateBody(runtime)
 	apiPath := fmt.Sprintf("/open-apis/docs_ai/v1/documents/%s", ref.Token)
-	return common.NewDryRunAPI().
+	dryRun := common.NewDryRunAPI().
 		PUT(apiPath).
 		Desc("OpenAPI: update document").
 		Body(body).
 		Set("document_id", ref.Token)
+	if warnings := updateV2MarkdownGuardrailWarnings(runtime); len(warnings) > 0 {
+		dryRun.Set("warnings", warnings)
+	}
+	return dryRun
 }
 
 func executeUpdateV2(_ context.Context, runtime *common.RuntimeContext) error {
 	ref, _ := parseDocumentRef(runtime.Str("doc"))
+	emitDocsUpdateV2MarkdownGuardrailWarnings(runtime)
 
 	apiPath := fmt.Sprintf("/open-apis/docs_ai/v1/documents/%s", ref.Token)
 	body := buildUpdateBody(runtime)
@@ -131,6 +136,20 @@ func executeUpdateV2(_ context.Context, runtime *common.RuntimeContext) error {
 
 	runtime.OutRaw(data, nil)
 	return nil
+}
+
+func updateV2MarkdownGuardrailWarnings(runtime *common.RuntimeContext) []string {
+	return docsUpdateV2MarkdownGuardrailWarnings(
+		runtime.Str("command"),
+		runtime.Str("doc-format"),
+		runtime.Str("content"),
+	)
+}
+
+func emitDocsUpdateV2MarkdownGuardrailWarnings(runtime *common.RuntimeContext) {
+	for _, w := range updateV2MarkdownGuardrailWarnings(runtime) {
+		fmt.Fprintf(runtime.IO().ErrOut, "warning: %s\n", w)
+	}
 }
 
 func buildUpdateBody(runtime *common.RuntimeContext) map[string]interface{} {
