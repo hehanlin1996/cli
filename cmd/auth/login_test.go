@@ -956,6 +956,64 @@ func TestAuthLoginRun_NoWaitJSONHintIncludesRawURLGuidance(t *testing.T) {
 	}
 }
 
+func TestAuthLoginRun_NoWaitJSONHintDefersBlockingPollUntilURLDelivered(t *testing.T) {
+	f, stdout, _, reg := cmdutil.TestFactory(t, &core.CliConfig{
+		ProfileName: "default",
+		AppID:       "cli_test",
+		AppSecret:   "secret",
+		Brand:       core.BrandFeishu,
+	})
+
+	reg.Register(&httpmock.Stub{
+		Method: "POST",
+		URL:    larkauth.PathDeviceAuthorization,
+		Body: map[string]interface{}{
+			"device_code":               "device-code",
+			"user_code":                 "user-code",
+			"verification_uri":          "https://example.com/verify",
+			"verification_uri_complete": "https://example.com/verify?code=123",
+			"expires_in":                240,
+			"interval":                  5,
+		},
+	})
+
+	err := authLoginRun(&LoginOptions{
+		Factory: f,
+		Ctx:     context.Background(),
+		Scope:   "im:message:send",
+		NoWait:  true,
+		JSON:    true,
+	})
+	if err != nil {
+		t.Fatalf("authLoginRun() error = %v", err)
+	}
+
+	dec := json.NewDecoder(strings.NewReader(stdout.String()))
+	var data map[string]interface{}
+	if err := dec.Decode(&data); err != nil {
+		t.Fatalf("Decode(stdout first event) error = %v, stdout=%q", err, stdout.String())
+	}
+	hint, _ := data["hint"].(string)
+	for _, want := range []string{
+		"Relay verification_url to the user first",
+		"only after that URL has been delivered",
+		"background or next turn",
+		"lark-cli auth login --device-code device-code",
+	} {
+		if !strings.Contains(hint, want) {
+			t.Fatalf("hint missing %q, got:\n%s", want, hint)
+		}
+	}
+	for _, unwanted := range []string{
+		"Then immediately execute",
+		"immediately execute: lark-cli auth login --device-code device-code",
+	} {
+		if strings.Contains(hint, unwanted) {
+			t.Fatalf("hint tells agents to run the blocking poll in the same turn (%q), got:\n%s", unwanted, hint)
+		}
+	}
+}
+
 func TestAuthLoginRun_JSONWriteFailure_DeviceAuthorizationReturnsWriterError(t *testing.T) {
 	f, _, _, reg := cmdutil.TestFactory(t, &core.CliConfig{
 		ProfileName: "default",
