@@ -16,6 +16,8 @@ import (
 	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
 )
 
+const imMessagesSendChatMembershipDryRunNotice = "Dry-run validates request shape only. It does not verify that the selected bot/user is a member of the target chat. A real send can still fail with `Bot/User can NOT be out of the chat`."
+
 var ImMessagesSend = common.Shortcut{
 	Service:     "im",
 	Command:     "+messages-send",
@@ -25,6 +27,7 @@ var ImMessagesSend = common.Shortcut{
 	UserScopes:  []string{"im:message.send_as_user", "im:message"},
 	BotScopes:   []string{"im:message:send_as_bot"},
 	AuthTypes:   []string{"bot", "user"},
+	HasFormat:   true,
 	Flags: []common.Flag{
 		{Name: "chat-id", Desc: "(required, mutually exclusive with --user-id) chat ID (oc_xxx)"},
 		{Name: "user-id", Desc: "(required, mutually exclusive with --chat-id) user open_id (ou_xxx)"},
@@ -33,11 +36,11 @@ var ImMessagesSend = common.Shortcut{
 		{Name: "text", Desc: "plain text message (auto-wrapped as JSON)"},
 		{Name: "markdown", Desc: "markdown text (auto-wrapped as post format with style optimization; image URLs auto-resolved)"},
 		{Name: "idempotency-key", Desc: "idempotency key (prevents duplicate sends)"},
-		{Name: "image", Desc: "image_key, local file path"},
-		{Name: "file", Desc: "file_key, local file path"},
-		{Name: "video", Desc: "video file_key, local file path; must be used together with --video-cover"},
-		{Name: "video-cover", Desc: "video cover image_key, local file path; required when using --video"},
-		{Name: "audio", Desc: "audio file_key, local file path"},
+		{Name: "image", Desc: "image_key, URL, or cwd-relative local file path (absolute paths are rejected)"},
+		{Name: "file", Desc: "file_key, URL, or cwd-relative local file path (absolute paths are rejected)"},
+		{Name: "video", Desc: "video file_key, URL, or cwd-relative local file path (absolute paths are rejected); must be used together with --video-cover"},
+		{Name: "video-cover", Desc: "video cover image_key, URL, or cwd-relative local file path (absolute paths are rejected); required when using --video"},
+		{Name: "audio", Desc: "audio file_key, URL, or cwd-relative local file path (absolute paths are rejected)"},
 	},
 	DryRun: func(ctx context.Context, runtime *common.RuntimeContext) *common.DryRunAPI {
 		chatFlag := runtime.Str("chat-id")
@@ -78,6 +81,16 @@ var ImMessagesSend = common.Shortcut{
 		}
 
 		d := common.NewDryRunAPI()
+		if chatFlag != "" {
+			d.Set("_notice", map[string]interface{}{
+				"im_chat_membership": map[string]interface{}{
+					"level":   "warning",
+					"message": imMessagesSendChatMembershipDryRunNotice,
+					"action":  "Ensure the selected --as bot/user is a member of the target chat before running without --dry-run.",
+				},
+			})
+			desc = appendDryRunDescription(desc, imMessagesSendChatMembershipDryRunNotice)
+		}
 		if desc != "" {
 			d.Desc(desc)
 		}
@@ -219,4 +232,14 @@ func validateMediaFlagPath(fio fileio.FileIO, flagName, value string) error {
 		return output.ErrValidation("%s: %v", flagName, err)
 	}
 	return nil
+}
+
+func appendDryRunDescription(current, addition string) string {
+	if current == "" {
+		return addition
+	}
+	if addition == "" {
+		return current
+	}
+	return current + " " + addition
 }

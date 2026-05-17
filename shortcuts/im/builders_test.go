@@ -735,10 +735,40 @@ func TestShortcutDryRunShapes(t *testing.T) {
 			"image":   "https://example.com/a.png",
 		}, nil)
 		got := mustMarshalDryRun(t, ImMessagesSend.DryRun(context.Background(), runtime))
-		if !strings.Contains(got, `"description":"dry-run uses placeholder media keys for --image URL input; execution uploads it before sending"`) ||
+		if !strings.Contains(got, "dry-run uses placeholder media keys for --image URL input; execution uploads it before sending") ||
 			!strings.Contains(got, `"msg_type":"image"`) ||
 			!strings.Contains(got, `\"image_key\":\"img_dryrun_upload\"`) {
 			t.Fatalf("ImMessagesSend.DryRun() = %s", got)
+		}
+	})
+
+	t.Run("ImMessagesSend dry run warns chat membership not verified", func(t *testing.T) {
+		runtime := newTestRuntimeContext(t, map[string]string{
+			"chat-id": "oc_123",
+			"text":    "hello",
+		}, nil)
+		got := mustMarshalDryRun(t, ImMessagesSend.DryRun(context.Background(), runtime))
+		for _, want := range []string{
+			`"_notice"`,
+			`"im_chat_membership"`,
+			"Dry-run validates request shape only",
+			"does not verify that the selected bot/user is a member of the target chat",
+			"Bot/User can NOT be out of the chat",
+		} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("ImMessagesSend.DryRun() missing %q: %s", want, got)
+			}
+		}
+	})
+
+	t.Run("ImMessagesSend dry run skips chat membership notice for direct user target", func(t *testing.T) {
+		runtime := newTestRuntimeContext(t, map[string]string{
+			"user-id": "ou_123",
+			"text":    "hello",
+		}, nil)
+		got := mustMarshalDryRun(t, ImMessagesSend.DryRun(context.Background(), runtime))
+		if strings.Contains(got, "im_chat_membership") {
+			t.Fatalf("direct user dry-run should not include chat membership notice: %s", got)
 		}
 	})
 

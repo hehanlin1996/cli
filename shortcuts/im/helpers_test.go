@@ -877,3 +877,40 @@ func TestShortcuts(t *testing.T) {
 		t.Fatalf("Shortcuts() commands = %#v, want %#v", commands, want)
 	}
 }
+
+func TestMessagesMediaFlagHelpDocumentsMediaInputs(t *testing.T) {
+	tests := []struct {
+		shortcut common.Shortcut
+		keys     map[string]string
+	}{
+		{shortcut: ImMessagesSend, keys: map[string]string{
+			"image": "image_key", "file": "file_key", "video": "file_key", "video-cover": "image_key", "audio": "file_key",
+		}},
+		{shortcut: ImMessagesReply, keys: map[string]string{
+			"image": "image_key", "file": "file_key", "video": "file_key", "video-cover": "image_key", "audio": "file_key",
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.shortcut.Command, func(t *testing.T) {
+			for flagName, keyHint := range tt.keys {
+				desc := shortcutFlagDesc(t, tt.shortcut, flagName)
+				for _, want := range []string{keyHint, "URL", "cwd-relative local file path", "absolute paths are rejected"} {
+					if !strings.Contains(desc, want) {
+						t.Fatalf("%s --%s help missing %q: %q", tt.shortcut.Command, flagName, want, desc)
+					}
+				}
+			}
+		})
+	}
+}
+
+func shortcutFlagDesc(t *testing.T, shortcut common.Shortcut, flagName string) string {
+	t.Helper()
+	for _, flag := range shortcut.Flags {
+		if flag.Name == flagName {
+			return flag.Desc
+		}
+	}
+	t.Fatalf("%s flag --%s not found", shortcut.Command, flagName)
+	return ""
+}
