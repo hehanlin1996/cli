@@ -2,12 +2,13 @@
 
 ## Metrics
 - Denominator: 73 leaf commands
-- Covered: 10
-- Coverage: 13.7%
+- Covered: 11
+- Coverage: 15.1%
 
 ## Summary
 - TestBase_BasicWorkflow: proves `+base-create`, `+base-get`, `+table-create`, `+table-get`, and `+table-list`; key `t.Run(...)` proof points are `get base as bot`, `get table as bot`, and `list tables and find created table as bot`.
 - TestBase_RoleWorkflow: proves `+advperm-enable`, `+role-create`, `+role-list`, `+role-get`, and `+role-update`; key `t.Run(...)` proof points are `list as bot`, `get as bot`, and `update as bot`.
+- TestBaseFormQuestionsCreateDryRun_AttachmentDefaultsAllFiles: proves `+form-questions-create --dry-run` emits the attachment question request body with `attachment.file_types=["all"]`.
 - Cleanup note: `+table-delete` and `+role-delete` only run in cleanup and are intentionally left uncovered.
 - Blocked area: dashboard, field, form, record, view, and workflow operations still lack deterministic create/read/update workflows in this suite.
 
@@ -42,7 +43,7 @@
 | ✕ | base +form-delete | shortcut |  | none | form workflows not covered |
 | ✕ | base +form-get | shortcut |  | none | form workflows not covered |
 | ✕ | base +form-list | shortcut |  | none | form workflows not covered |
-| ✕ | base +form-questions-create | shortcut |  | none | form workflows not covered |
+| ✓ | base +form-questions-create | shortcut | base_form_questions_dryrun_test.go::TestBaseFormQuestionsCreateDryRun_AttachmentDefaultsAllFiles | `--base-token`; `--table-id`; `--form-id`; `--questions`; `--dry-run` | dry-run request body only |
 | ✕ | base +form-questions-delete | shortcut |  | none | form workflows not covered |
 | ✕ | base +form-questions-list | shortcut |  | none | form workflows not covered |
 | ✕ | base +form-questions-update | shortcut |  | none | form workflows not covered |

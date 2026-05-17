@@ -266,7 +266,7 @@ func TestBaseFormQuestionsExecuteList(t *testing.T) {
 func TestBaseFormQuestionsExecuteCreate(t *testing.T) {
 	t.Run("create questions", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		reg.Register(&httpmock.Stub{
+		createStub := &httpmock.Stub{
 			Method: "POST",
 			URL:    "/open-apis/base/v3/bases/app_x/tables/tbl_x/forms/vew_form1/questions",
 			Body: map[string]interface{}{
@@ -277,14 +277,87 @@ func TestBaseFormQuestionsExecuteCreate(t *testing.T) {
 					},
 				},
 			},
-		})
+		}
+		reg.Register(createStub)
 		args := []string{"+form-questions-create", "--base-token", "app_x", "--table-id", "tbl_x", "--form-id", "vew_form1",
 			"--questions", `[{"type":"text","title":"您的姓名","required":true}]`}
 		if err := runShortcut(t, BaseFormQuestionsCreate, args, factory, stdout); err != nil {
 			t.Fatalf("err=%v", err)
 		}
+		body := decodeCapturedJSONBody(t, createStub)
+		questions, _ := body["questions"].([]interface{})
+		if len(questions) != 1 {
+			t.Fatalf("captured questions=%#v", body["questions"])
+		}
+		question, _ := questions[0].(map[string]interface{})
+		if _, ok := question["attachment"]; ok {
+			t.Fatalf("non-attachment question should not receive attachment config: %#v", question)
+		}
 		if got := stdout.String(); !strings.Contains(got, `"questions"`) || !strings.Contains(got, `"q_new1"`) {
 			t.Fatalf("stdout=%s", got)
+		}
+	})
+
+	t.Run("attachment defaults to all file types", func(t *testing.T) {
+		factory, stdout, reg := newExecuteFactory(t)
+		createStub := &httpmock.Stub{
+			Method: "POST",
+			URL:    "/open-apis/base/v3/bases/app_x/tables/tbl_x/forms/vew_form1/questions",
+			Body: map[string]interface{}{
+				"code": 0,
+				"data": map[string]interface{}{
+					"questions": []interface{}{
+						map[string]interface{}{"id": "q_resume", "title": "请上传PDF简历", "required": true},
+					},
+				},
+			},
+		}
+		reg.Register(createStub)
+		args := []string{"+form-questions-create", "--base-token", "app_x", "--table-id", "tbl_x", "--form-id", "vew_form1",
+			"--questions", `[{"type":"attachment","title":"请上传PDF简历","required":true}]`}
+		if err := runShortcut(t, BaseFormQuestionsCreate, args, factory, stdout); err != nil {
+			t.Fatalf("err=%v", err)
+		}
+
+		body := decodeCapturedJSONBody(t, createStub)
+		questions, _ := body["questions"].([]interface{})
+		if len(questions) != 1 {
+			t.Fatalf("captured questions=%#v", body["questions"])
+		}
+		question, _ := questions[0].(map[string]interface{})
+		attachment, _ := question["attachment"].(map[string]interface{})
+		fileTypes, _ := attachment["file_types"].([]interface{})
+		if len(fileTypes) != 1 || fileTypes[0] != "all" {
+			t.Fatalf("attachment.file_types=%#v, want [all]; full question=%#v", attachment["file_types"], question)
+		}
+	})
+
+	t.Run("attachment preserves explicit config", func(t *testing.T) {
+		questions, err := parseBaseFormQuestionsCreateInput(`[{"type":"attachment","title":"照片","attachment":{"file_types":["image"]}}]`)
+		if err != nil {
+			t.Fatalf("err=%v", err)
+		}
+		question := questions[0].(map[string]interface{})
+		attachment := question["attachment"].(map[string]interface{})
+		fileTypes := attachment["file_types"].([]interface{})
+		if len(fileTypes) != 1 || fileTypes[0] != "image" {
+			t.Fatalf("attachment.file_types=%#v, want [image]", attachment["file_types"])
+		}
+	})
+
+	t.Run("attachment preserves explicit attachment_config", func(t *testing.T) {
+		questions, err := parseBaseFormQuestionsCreateInput(`[{"type":"attachment","title":"简历","attachment_config":{"file_types":["pdf"]}}]`)
+		if err != nil {
+			t.Fatalf("err=%v", err)
+		}
+		question := questions[0].(map[string]interface{})
+		if _, ok := question["attachment"]; ok {
+			t.Fatalf("explicit attachment_config should not be overwritten: %#v", question)
+		}
+		attachmentConfig := question["attachment_config"].(map[string]interface{})
+		fileTypes := attachmentConfig["file_types"].([]interface{})
+		if len(fileTypes) != 1 || fileTypes[0] != "pdf" {
+			t.Fatalf("attachment_config.file_types=%#v, want [pdf]", attachmentConfig["file_types"])
 		}
 	})
 
