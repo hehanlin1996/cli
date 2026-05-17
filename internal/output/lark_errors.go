@@ -3,6 +3,8 @@
 
 package output
 
+import "strings"
+
 // Lark API generic error code constants.
 // ref: https://open.feishu.cn/document/server-docs/api-call-guide/generic-error-code
 const (
@@ -24,8 +26,12 @@ const (
 	LarkErrAppNotInUse     = 99991662 // app is disabled or not installed in this tenant
 	LarkErrAppUnauthorized = 99991673 // app status unavailable; check installation
 
-	// Rate limit.
-	LarkErrRateLimit = 99991400 // request frequency limit exceeded
+	// Rate limit / quota.
+	LarkErrRateLimit            = 99991400 // request frequency limit exceeded
+	LarkErrMonthlyQuotaExceeded = 99991403 // this month's API call quota has been exceeded
+
+	// Generic invalid parameter. Often returned for IDs that belong to another app/profile.
+	LarkErrInvalidParam = 10003
 
 	// Refresh token errors (authn service).
 	LarkErrRefreshInvalid     = 20026 // refresh_token invalid or v1 format
@@ -76,9 +82,16 @@ func ClassifyLarkError(code int, msg string) (int, string, string) {
 	case LarkErrAppNotInUse, LarkErrAppUnauthorized:
 		return ExitAuth, "app_status", "app is disabled or not installed — check developer console"
 
-	// rate limit
+	// rate limit / quota
 	case LarkErrRateLimit:
 		return ExitAPI, "rate_limit", "please try again later"
+	case LarkErrMonthlyQuotaExceeded:
+		return ExitAPI, "quota_exceeded", buildMonthlyQuotaExceededHint()
+
+	// generic low-signal errors that often mean the active app/profile differs
+	// from the app/profile that produced the resource IDs being used.
+	case LarkErrInvalidParam:
+		return ExitAPI, "app_profile_mismatch", buildAppProfileMismatchHint()
 
 	// drive-specific constraints that benefit from actionable hints
 	case LarkErrDriveResourceContention:
@@ -106,5 +119,29 @@ func ClassifyLarkError(code int, msg string) (int, string, string) {
 		return ExitAPI, "ownership_mismatch", buildOwnershipRecoveryHint()
 	}
 
+	if isAppProfileMismatchSignal(msg) {
+		return ExitAPI, "app_profile_mismatch", buildAppProfileMismatchHint()
+	}
+
 	return ExitAPI, "api_error", ""
+}
+
+func isAppProfileMismatchSignal(msg string) bool {
+	lower := strings.ToLower(msg)
+	compact := strings.NewReplacer("-", "_", " ", "_").Replace(lower)
+
+	return strings.Contains(compact, "open_id_cross_app") ||
+		strings.Contains(compact, "openid_cross_app") ||
+		strings.Contains(compact, "cross_app") ||
+		strings.Contains(lower, "not the sender") ||
+		strings.Contains(lower, "app/profile mismatch") ||
+		strings.Contains(lower, "profile mismatch")
+}
+
+func buildAppProfileMismatchHint() string {
+	return "Possible app/profile mismatch: verify current profile/app_id matches the app that produced the chat/message/user IDs; run `lark-cli profile list`, retry with the intended `--profile`, and if the bound app changed run `lark-cli config bind` and `lark-cli auth login` again."
+}
+
+func buildMonthlyQuotaExceededHint() string {
+	return "The monthly API call quota is exceeded: check usage and quota in the developer console/open platform; request a quota increase or contact an admin or official support; reduce call volume. Do not retry repeatedly."
 }
