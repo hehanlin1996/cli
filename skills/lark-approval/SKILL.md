@@ -12,6 +12,18 @@ metadata:
 
 **CRITICAL — 开始前 MUST 先用 Read 工具读取 [`../lark-shared/SKILL.md`](../lark-shared/SKILL.md)，其中包含认证、权限处理**
 
+## Shortcuts（优先使用）
+
+| Shortcut | 说明 |
+|----------|------|
+| `+instance-preview` | 调用 `POST /approval/v4/instances/preview`，提交前预览审批流；`--data` 接完整请求 JSON，支持 `@file` / `-` |
+| `+instance-create` | 调用 `POST /approval/v4/instances` 创建审批实例；`--data` 接完整请求 JSON，支持 `@file` / `-` |
+
+```bash
+lark-cli approval +instance-preview --data @approval_request.json --user-id-type open_id --as bot
+lark-cli approval +instance-create --data @approval_request.json --user-id-type open_id --as bot
+```
+
 ## API Resources
 
 ```bash
@@ -46,6 +58,8 @@ lark-cli approval <resource> <method> [flags] # 调用 API
 | `instances.cancel` | `approval:instance:write` |
 | `instances.cc` | `approval:instance:write` |
 | `instances.initiated` | `approval:instance:read` |
+| `+instance-preview` | `approval:instance:write` |
+| `+instance-create` | `approval:instance:write` |
 | `tasks.remind` | `approval:instance:write` |
 | `tasks.approve` | `approval:task:write` |
 | `tasks.reject` | `approval:task:write` |
@@ -53,4 +67,3 @@ lark-cli approval <resource> <method> [flags] # 调用 API
 | `tasks.query` | `approval:task:read` |
 | `tasks.add_sign` | `approval:task:write` |
 | `tasks.rollback` | `approval:task:write` |
-
