@@ -163,6 +163,8 @@ lark-cli im +messages-send --chat-id oc_xxx --markdown $'## Test\n\nhello' --dry
 | `--as <identity>` | No | Identity type: `bot` or `user` (default `bot`) |
 | `--dry-run` | No | Print the request only, do not execute it |
 
+> **Image upload identity:** Local `--image ./file.png` first uploads the file and then sends the returned `image_key`. The underlying image upload API is bot-token based, so bot credentials and `im:resource` must be available even when an agent later sends or downloads message resources with user identity. If you already have a valid `img_xxx` from the same tenant, pass it directly as `--image img_xxx`.
+
 > **Mutual exclusivity rule:** `--text`, `--markdown`, `--content`, and `--image`/`--file`/`--video`/`--audio` cannot be used together. Media flags are also mutually exclusive with each other.
 >
 > **Video cover rule:** `--video` **must** be accompanied by `--video-cover`. Omitting `--video-cover` when using `--video` will fail validation. `--video-cover` cannot be used without `--video`.

@@ -41,6 +41,23 @@ lark-cli config init --new
 - **Bot 权限**：只需在飞书开发者后台开通 scope，无需 `auth login`
 - **User 权限**：后台开通 scope + 用户通过 `auth login` 授权，两层都要满足
 
+### Agent/外部凭证边界
+
+- 如果当前环境由 OpenClaw、Hermes、Lark Channel 等外部凭证源提供 token，`auth login` 不会改写该外部凭证源；需要先确认是否应运行 `lark-cli config bind --source <openclaw|hermes|lark-channel>`，或切回普通本地配置目录后再登录。
+- 看到 `client_secret` 缺失时，不要让用户把密钥贴进聊天；先运行 `lark-cli config show` 确认当前 profile/source，再让用户通过 `config init --new` 或 `config bind` 的浏览器流程配置。
+- Agent 场景不要短超时反复重启 `auth login`。优先使用 `lark-cli auth login --no-wait --json`，把返回的 URL 原样发给用户，再用 `--device-code` 续轮询。
+- 需要访问个人文档、通讯录搜索、邮箱、日历等用户资源时，用 `--as user` 并完成 user 授权；只开 bot scope 不等于能访问用户资源。
+
+### 最小权限选择
+
+遇到权限申请被驳回或 scope 列表膨胀时，按“当前任务只加当前缺口”的原则处理：
+
+| 场景 | 推荐起点 |
+|------|----------|
+| 读取/更新文档 | `lark-cli auth login --scope "docx:document:readonly docx:document:write_only"` |
+| 搜索或解析员工 | 优先用 `lark-contact` 的精确搜索；缺 scope 时只补 CLI 错误里列出的 contact scope |
+| 读取个人云空间文件 | 先确认用户确实要 `--as user`，再按 Drive 命令报错中的 missing scope 增量授权 |
+| 不确定需要哪些权限 | 先跑目标命令一次读取结构化 `permission_violations`，不要直接 `--domain all` |
 
 ### 权限不足处理
 

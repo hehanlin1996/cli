@@ -123,6 +123,15 @@ lark-cli auth login --recommend
 lark-cli auth status
 ```
 
+**Agent setup troubleshooting**
+
+| Symptom | What to check | Next step |
+| --- | --- | --- |
+| `lark-cli: command not found` | The agent shell cannot see the binary installed by `npx @larksuite/cli@latest install` | Run `command -v lark-cli`; if empty, reinstall in the same shell/user or add the reported install directory to `PATH` |
+| npm registry timeout | The sandbox or IDE environment cannot reach the npm registry | Retry from a network-enabled shell, or ask the user to install the CLI outside the sandbox and reopen the agent |
+| `not configured` | The current workspace has no bound app config | Run `lark-cli config init --new`, or for supported agent hosts run `lark-cli config bind --source <openclaw|hermes|lark-channel>` after user confirmation |
+| auth URL expires before the user opens it | The command was killed and restarted with a short timeout | Use `lark-cli auth login --no-wait --json`, send the returned URL as-is, then resume with `lark-cli auth login --device-code <code>` |
+
 ## Agent Skills
 
 | Skill                           | Description                                                                                                    |

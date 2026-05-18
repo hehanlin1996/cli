@@ -8,6 +8,8 @@ Download image or file resources from a message. Supports **automatic chunked do
 
 This skill maps to the shortcut: `lark-cli im +messages-resources-download` (internally calls `GET /open-apis/im/v1/messages/{message_id}/resources/{file_key}`).
 
+Do **not** download a message image by calling raw `GET /open-apis/im/v1/images/{image_key}` or by using only the `image_key`. Message resources are scoped by both the containing `message_id` and the resource key. Raw image-key downloads can return a client-upgrade placeholder instead of the real image bytes.
+
 ## Commands
 
 ```bash
@@ -83,6 +85,7 @@ lark-cli im +messages-resources-download --message-id om_xxx --file-key img_v3_x
 | Symptom | Root Cause | Solution |
 |---------|---------|---------|
 | Download failed | `file_key` does not match the `message_id` | Make sure the `file_key` came from that message's content |
+| Downloaded image is an upgrade-client placeholder | The image was fetched through a raw image-key endpoint or without the owning `message_id` | Re-fetch the message to get `message_id` + `image_key`, then run `im +messages-resources-download --message-id <om_xxx> --file-key <img_xxx> --type image` |
 | Hit error code 234002 or 14005 | No permission, **not** missing API scope | no access to this chat or file was deleted — do not retry, return the error to the user |
 | Permission denied | `im:message:readonly` is not authorized | Run `auth login --scope "im:message:readonly"` |
 | File size mismatch | Chunked download integrity check failed | Network instability during download; retry the command |
