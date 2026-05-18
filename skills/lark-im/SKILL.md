@@ -51,6 +51,14 @@ When using bot identity (`--as bot`) to fetch messages (e.g. `+chat-messages-lis
 
 Card messages (`interactive` type) are not yet supported for compact conversion in event subscriptions. The raw event data will be returned instead, with a hint printed to stderr.
 
+### Message Links in Read Results
+
+Message-reading shortcuts such as `+chat-messages-list`, `+messages-search`,
+`+messages-mget`, and `+threads-messages-list` include `message_app_link` in
+JSON output when the API returns it or when the CLI can assemble it from the
+message metadata. When summarizing chat history or returning source evidence,
+include this field so the user can jump back to the original message.
+
 ### Flag Types
 
 Flags support two layers:
@@ -159,4 +167,3 @@ lark-cli im <resource> <method> [flags] # 调用 API
 | `pins.create` | `im:message.pins:write_only` |
 | `pins.delete` | `im:message.pins:write_only` |
 | `pins.list` | `im:message.pins:read` |
-

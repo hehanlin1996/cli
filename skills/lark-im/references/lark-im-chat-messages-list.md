@@ -94,6 +94,7 @@ Each message contains:
 | `updated` | Whether the message has been edited after sending |
 | `mentions` | Array of @mentions in the message; each item contains `{id, key, name}`. Present only when the message contains @mentions |
 | `thread_id` | Thread ID (`omt_xxx`) if the message has replies in a thread. Present only when replies exist |
+| `message_app_link` | Lark/Feishu app link to the original message when available. Include it in summaries and evidence so the user can open the source message directly |
 
 ## Pagination (`has_more` / `page_token`)
 

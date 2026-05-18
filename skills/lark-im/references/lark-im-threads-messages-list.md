@@ -94,6 +94,9 @@ lark-cli im +threads-messages-list --thread omt_xxx --page-token <PAGE_TOKEN>
 
 Thread replies are rendered into human-readable text. Image messages appear as placeholders such as `[Image: img_xxx]`; resource binaries are **not** downloaded automatically.
 
+JSON output includes `message_app_link` when available. Preserve it in summaries
+and evidence so the user can open the original thread reply directly.
+
 Other resource types (files, audio, video) still need to be downloaded manually through `im +messages-resources-download`. See [lark-im-messages-resources-download](lark-im-messages-resources-download.md).
 
 ## Common Errors and Troubleshooting
