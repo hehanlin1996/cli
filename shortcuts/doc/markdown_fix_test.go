@@ -359,6 +359,33 @@ func TestFixExportedMarkdown(t *testing.T) {
 	}
 }
 
+func TestNormalizeMarkdownInputEscapes(t *testing.T) {
+	input := strings.Join([]string{
+		`SAMPLE\_RATE keeps its literal underscore.`,
+		`Use 1\+1, \~tmp, \<tag>, and \* as plain text.`,
+		"",
+		"`INLINE\\_CODE` keeps code spans byte-for-byte.",
+		"",
+		"```",
+		`FENCED\_CODE and 1\+1 stay escaped.`,
+		"```",
+	}, "\n")
+
+	got := normalizeMarkdownInputEscapes(input)
+
+	wantContains := []string{
+		"SAMPLE_RATE keeps its literal underscore.",
+		"Use 1+1, ~tmp, <tag>, and * as plain text.",
+		"`INLINE\\_CODE` keeps code spans byte-for-byte.",
+		"```\n" + `FENCED\_CODE and 1\+1 stay escaped.` + "\n```",
+	}
+	for _, want := range wantContains {
+		if !strings.Contains(got, want) {
+			t.Fatalf("normalizeMarkdownInputEscapes() missing %q in:\n%s", want, got)
+		}
+	}
+}
+
 func TestWarnCalloutType(t *testing.T) {
 	tests := []struct {
 		name         string

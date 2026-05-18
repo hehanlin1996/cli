@@ -184,7 +184,7 @@ func buildUpdateArgsV1(runtime *common.RuntimeContext) map[string]interface{} {
 		"mode":   runtime.Str("mode"),
 	}
 	if v := runtime.Str("markdown"); v != "" {
-		args["markdown"] = v
+		args["markdown"] = normalizeMarkdownInputEscapes(v)
 	}
 	if v := runtime.Str("selection-with-ellipsis"); v != "" {
 		args["selection_with_ellipsis"] = v

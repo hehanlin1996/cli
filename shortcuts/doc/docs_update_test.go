@@ -5,6 +5,9 @@ package doc
 import (
 	"reflect"
 	"testing"
+
+	"github.com/larksuite/cli/shortcuts/common"
+	"github.com/spf13/cobra"
 )
 
 // ── V2 tests ──
@@ -100,4 +103,32 @@ func TestNormalizeWhiteboardResult(t *testing.T) {
 			t.Fatalf("did not expect board_tokens for non-whiteboard markdown")
 		}
 	})
+}
+
+func TestBuildUpdateArgsV1NormalizesMarkdownEscapes(t *testing.T) {
+	cmd := &cobra.Command{Use: "+update"}
+	cmd.Flags().String("doc", "doc_token", "")
+	cmd.Flags().String("mode", "append", "")
+	cmd.Flags().String("markdown", `SAMPLE\_RATE and 1\+1`, "")
+	runtime := common.TestNewRuntimeContext(cmd, nil)
+
+	args := buildUpdateArgsV1(runtime)
+	if got := args["markdown"]; got != "SAMPLE_RATE and 1+1" {
+		t.Fatalf("markdown = %#v, want normalized markdown escapes", got)
+	}
+}
+
+func TestBuildCreateArgsV1NormalizesMarkdownEscapes(t *testing.T) {
+	cmd := &cobra.Command{Use: "+create"}
+	cmd.Flags().String("markdown", `SAMPLE\_RATE and 1\+1`, "")
+	cmd.Flags().String("title", "", "")
+	cmd.Flags().String("folder-token", "", "")
+	cmd.Flags().String("wiki-node", "", "")
+	cmd.Flags().String("wiki-space", "", "")
+	runtime := common.TestNewRuntimeContext(cmd, nil)
+
+	args := buildCreateArgsV1(runtime)
+	if got := args["markdown"]; got != "SAMPLE_RATE and 1+1" {
+		t.Fatalf("markdown = %#v, want normalized markdown escapes", got)
+	}
 }

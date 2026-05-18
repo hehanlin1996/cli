@@ -11,6 +11,7 @@ import (
 
 	clie2e "github.com/larksuite/cli/tests/cli_e2e"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // TestDocs_UpdateDryRunSuppressesSemanticWarnings asserts the contract that
@@ -67,4 +68,69 @@ func TestDocs_UpdateDryRunSuppressesSemanticWarnings(t *testing.T) {
 				needle, result.Stdout, result.Stderr)
 		}
 	}
+}
+
+func TestDocs_UpdateDryRunNormalizesVisibleMarkdownEscapes(t *testing.T) {
+	t.Setenv("LARKSUITE_CLI_APP_ID", "app")
+	t.Setenv("LARKSUITE_CLI_APP_SECRET", "secret")
+	t.Setenv("LARKSUITE_CLI_BRAND", "feishu")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+
+	result, err := clie2e.RunCmd(ctx, clie2e.Request{
+		Args: []string{
+			"docs", "+update",
+			"--doc", "doxcnDryRunE2E",
+			"--mode", "append",
+			"--markdown", `SAMPLE\_RATE and 1\+1`,
+			"--dry-run",
+		},
+		DefaultAs: "bot",
+	})
+	require.NoError(t, err)
+	result.AssertExitCode(t, 0)
+
+	require.Equal(t, "SAMPLE_RATE and 1+1", gjson.Get(result.Stdout, "args.markdown").String(), "stdout:\n%s", result.Stdout)
+}
+
+func TestDocs_UpdateV2DryRunNormalizesMarkdownEscapesOnlyForMarkdown(t *testing.T) {
+	t.Setenv("LARKSUITE_CLI_APP_ID", "app")
+	t.Setenv("LARKSUITE_CLI_APP_SECRET", "secret")
+	t.Setenv("LARKSUITE_CLI_BRAND", "feishu")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+
+	result, err := clie2e.RunCmd(ctx, clie2e.Request{
+		Args: []string{
+			"docs", "+update",
+			"--api-version", "v2",
+			"--doc", "doxcnDryRunE2E",
+			"--command", "append",
+			"--doc-format", "markdown",
+			"--content", `SAMPLE\_RATE and 1\+1`,
+			"--dry-run",
+		},
+		DefaultAs: "bot",
+	})
+	require.NoError(t, err)
+	result.AssertExitCode(t, 0)
+	require.Equal(t, "SAMPLE_RATE and 1+1", gjson.Get(result.Stdout, "api.0.body.content").String(), "stdout:\n%s", result.Stdout)
+
+	xmlResult, err := clie2e.RunCmd(ctx, clie2e.Request{
+		Args: []string{
+			"docs", "+update",
+			"--api-version", "v2",
+			"--doc", "doxcnDryRunE2E",
+			"--command", "append",
+			"--doc-format", "xml",
+			"--content", `<p>SAMPLE\_RATE</p>`,
+			"--dry-run",
+		},
+		DefaultAs: "bot",
+	})
+	require.NoError(t, err)
+	xmlResult.AssertExitCode(t, 0)
+	require.Equal(t, `<p>SAMPLE\_RATE</p>`, gjson.Get(xmlResult.Stdout, "api.0.body.content").String(), "stdout:\n%s", xmlResult.Stdout)
 }

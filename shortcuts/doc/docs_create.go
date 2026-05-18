@@ -128,7 +128,7 @@ func executeCreateV1(_ context.Context, runtime *common.RuntimeContext) error {
 }
 
 func buildCreateArgsV1(runtime *common.RuntimeContext) map[string]interface{} {
-	md := runtime.Str("markdown")
+	md := normalizeMarkdownInputEscapes(runtime.Str("markdown"))
 	args := map[string]interface{}{
 		"markdown": md,
 	}

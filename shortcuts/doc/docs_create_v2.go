@@ -57,9 +57,13 @@ func executeCreateV2(_ context.Context, runtime *common.RuntimeContext) error {
 }
 
 func buildCreateBody(runtime *common.RuntimeContext) map[string]interface{} {
+	content := runtime.Str("content")
+	if runtime.Str("doc-format") == "markdown" {
+		content = normalizeMarkdownInputEscapes(content)
+	}
 	body := map[string]interface{}{
 		"format":  runtime.Str("doc-format"),
-		"content": runtime.Str("content"),
+		"content": content,
 	}
 	if v := runtime.Str("parent-token"); v != "" {
 		body["parent_token"] = v

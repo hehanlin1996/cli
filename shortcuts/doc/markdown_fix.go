@@ -58,6 +58,65 @@ func fixExportedMarkdown(md string) string {
 	return md
 }
 
+// normalizeMarkdownInputEscapes removes visible Markdown escape backslashes
+// that AI agents commonly add before literal punctuation in prose. Lark's
+// document renderer does not always consume these escapes on write, so leaving
+// them in input can produce visible "\_", "\+", "\*" text in the document.
+// Fenced and inline code are preserved byte-for-byte.
+func normalizeMarkdownInputEscapes(md string) string {
+	return applyOutsideCodeFences(md, func(s string) string {
+		lines := strings.Split(s, "\n")
+		for i, line := range lines {
+			lines[i] = normalizeMarkdownInputEscapesLine(line)
+		}
+		return strings.Join(lines, "\n")
+	})
+}
+
+func normalizeMarkdownInputEscapesLine(line string) string {
+	spans := scanInlineCodeSpans(line)
+	if len(spans) == 0 {
+		return normalizeMarkdownInputEscapesSegment(line)
+	}
+
+	var sb strings.Builder
+	pos := 0
+	for _, loc := range spans {
+		sb.WriteString(normalizeMarkdownInputEscapesSegment(line[pos:loc[0]]))
+		sb.WriteString(line[loc[0]:loc[1]])
+		pos = loc[1]
+	}
+	sb.WriteString(normalizeMarkdownInputEscapesSegment(line[pos:]))
+	return sb.String()
+}
+
+func normalizeMarkdownInputEscapesSegment(seg string) string {
+	if !strings.Contains(seg, `\`) {
+		return seg
+	}
+
+	var sb strings.Builder
+	sb.Grow(len(seg))
+	for i := 0; i < len(seg); i++ {
+		if seg[i] == '\\' && i+1 < len(seg) && isCommonVisibleMarkdownEscape(seg[i+1]) {
+			sb.WriteByte(seg[i+1])
+			i++
+			continue
+		}
+		sb.WriteByte(seg[i])
+	}
+	return sb.String()
+}
+
+func isCommonVisibleMarkdownEscape(ch byte) bool {
+	switch ch {
+	case '_', '*', '+', '~', '<', '>':
+		return true
+	default:
+		return false
+	}
+}
+
 // applyOutsideCodeFences applies fn only to content outside fenced code blocks.
 // Lines inside fenced code blocks (``` ... ```) are passed through unchanged,
 // preventing transforms from corrupting literal code content.

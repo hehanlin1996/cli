@@ -47,6 +47,54 @@ func TestBuildUpdateBodyIncludesSceneFromContext(t *testing.T) {
 	}
 }
 
+func TestBuildCreateBodyNormalizesMarkdownEscapesOnlyForMarkdown(t *testing.T) {
+	runtime := newCreateBodyTestRuntime(context.Background())
+	if err := runtime.Cmd.Flags().Set("doc-format", "markdown"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Cmd.Flags().Set("content", `SAMPLE\_RATE and 1\+1`); err != nil {
+		t.Fatal(err)
+	}
+
+	body := buildCreateBody(runtime)
+	if got := body["content"]; got != "SAMPLE_RATE and 1+1" {
+		t.Fatalf("content = %#v, want normalized markdown escapes", got)
+	}
+
+	xmlRuntime := newCreateBodyTestRuntime(context.Background())
+	if err := xmlRuntime.Cmd.Flags().Set("content", `<p>SAMPLE\_RATE</p>`); err != nil {
+		t.Fatal(err)
+	}
+	xmlBody := buildCreateBody(xmlRuntime)
+	if got := xmlBody["content"]; got != `<p>SAMPLE\_RATE</p>` {
+		t.Fatalf("xml content = %#v, want unchanged XML content", got)
+	}
+}
+
+func TestBuildUpdateBodyNormalizesMarkdownEscapesOnlyForMarkdown(t *testing.T) {
+	runtime := newUpdateBodyTestRuntime(context.Background())
+	if err := runtime.Cmd.Flags().Set("doc-format", "markdown"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Cmd.Flags().Set("content", `SAMPLE\_RATE and 1\+1`); err != nil {
+		t.Fatal(err)
+	}
+
+	body := buildUpdateBody(runtime)
+	if got := body["content"]; got != "SAMPLE_RATE and 1+1" {
+		t.Fatalf("content = %#v, want normalized markdown escapes", got)
+	}
+
+	xmlRuntime := newUpdateBodyTestRuntime(context.Background())
+	if err := xmlRuntime.Cmd.Flags().Set("content", `<p>SAMPLE\_RATE</p>`); err != nil {
+		t.Fatal(err)
+	}
+	xmlBody := buildUpdateBody(xmlRuntime)
+	if got := xmlBody["content"]; got != `<p>SAMPLE\_RATE</p>` {
+		t.Fatalf("xml content = %#v, want unchanged XML content", got)
+	}
+}
+
 func TestBuildFetchBodyOmitsEmptyScene(t *testing.T) {
 	t.Parallel()
 

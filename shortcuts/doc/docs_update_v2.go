@@ -151,6 +151,9 @@ func buildUpdateBody(runtime *common.RuntimeContext) map[string]interface{} {
 		body["revision_id"] = v
 	}
 	if v := runtime.Str("content"); v != "" {
+		if runtime.Str("doc-format") == "markdown" {
+			v = normalizeMarkdownInputEscapes(v)
+		}
 		body["content"] = v
 	}
 	if v := runtime.Str("pattern"); v != "" {
