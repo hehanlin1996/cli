@@ -164,6 +164,15 @@ var CreateTasklist = common.Shortcut{
 			"url":           tasklistUrl,
 			"created_tasks": createdTasks,
 		}
+		if len(failedTasks) > 0 {
+			outData["failed_tasks"] = failedTasks
+			return taskPartialFailureError(
+				"create tasklist",
+				fmt.Sprintf("created tasklist %q but %d/%d child tasks failed", tasklistGuid, len(failedTasks), len(tasks)),
+				"Inspect error.detail.failed_tasks, then retry failed child tasks after verifying tasklist visibility and permissions.",
+				outData,
+			)
+		}
 
 		runtime.OutFormat(outData, nil, func(w io.Writer) {
 			fmt.Fprintf(w, "✅ Tasklist created successfully!\n")

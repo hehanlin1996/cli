@@ -122,6 +122,14 @@ var AddTaskToTasklist = common.Shortcut{
 			"failed_tasks":     failed,
 			"tasklist_guid":    tasklistGuid,
 		}
+		if len(failed) > 0 {
+			return taskPartialFailureError(
+				"add tasks to tasklist",
+				fmt.Sprintf("%d/%d task additions failed", len(failed), len(successful)+len(failed)),
+				"Inspect error.detail.failed_tasks, verify task IDs and tasklist permissions, then retry only the failed task IDs.",
+				resultData,
+			)
+		}
 
 		runtime.OutFormat(resultData, nil, func(w io.Writer) {
 			fmt.Fprintf(w, "✅ Tasks added to tasklist %s!\n", tasklistGuid)

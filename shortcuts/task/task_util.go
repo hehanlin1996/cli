@@ -167,6 +167,18 @@ func HandleTaskApiResult(result interface{}, err error, action string) (map[stri
 	return data, nil
 }
 
+func taskPartialFailureError(action, message, hint string, detail interface{}) error {
+	return &output.ExitError{
+		Code: output.ExitAPI,
+		Detail: &output.ErrDetail{
+			Type:    "task_partial_failure",
+			Message: fmt.Sprintf("%s: %s", action, message),
+			Hint:    hint,
+			Detail:  detail,
+		},
+	}
+}
+
 func contains(slice []string, item string) bool {
 	for _, s := range slice {
 		if s == item {
