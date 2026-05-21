@@ -17,6 +17,7 @@ import (
 	"github.com/larksuite/cli/internal/cmdutil"
 	"github.com/larksuite/cli/internal/core"
 	"github.com/larksuite/cli/internal/httpmock"
+	"github.com/larksuite/cli/internal/output"
 	"github.com/larksuite/cli/shortcuts/common"
 )
 
@@ -31,6 +32,7 @@ type fakeWikiNodeCreateClient struct {
 	createNode    *wikiNodeRecord
 	returnNilNode bool
 	createErr     error
+	createErrs    []error
 	getSpaceErr   error
 	getNodeErr    error
 	createInvoked []fakeWikiNodeCreateCall
@@ -65,6 +67,13 @@ func (fake *fakeWikiNodeCreateClient) CreateNode(ctx context.Context, spaceID st
 	})
 	if fake.createErr != nil {
 		return nil, fake.createErr
+	}
+	if len(fake.createErrs) > 0 {
+		err := fake.createErrs[0]
+		fake.createErrs = fake.createErrs[1:]
+		if err != nil {
+			return nil, err
+		}
 	}
 	if fake.returnNilNode {
 		return nil, nil
@@ -263,6 +272,43 @@ func TestRunWikiNodeCreateCreatesNodeInResolvedSpace(t *testing.T) {
 	}
 	if execution.ResolvedSpace.ResolvedBy != wikiResolvedByMyLibrary {
 		t.Fatalf("resolved_by = %q, want %q", execution.ResolvedSpace.ResolvedBy, wikiResolvedByMyLibrary)
+	}
+}
+
+func TestRunWikiNodeCreateRetriesLockContention(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeWikiNodeCreateClient{
+		spaces: map[string]*wikiSpaceRecord{
+			wikiMyLibrarySpaceID: {SpaceID: "space_my_library"},
+		},
+		createErrs: []error{
+			output.ErrAPI(131009, "lock contention", map[string]interface{}{"code": 131009}),
+			output.ErrAPI(131009, "lock contention", map[string]interface{}{"code": 131009}),
+		},
+		createNode: &wikiNodeRecord{
+			SpaceID:   "space_my_library",
+			NodeToken: "wik_created",
+			NodeType:  wikiNodeTypeOrigin,
+			ObjType:   "docx",
+			Title:     "Roadmap",
+		},
+	}
+
+	spec := wikiNodeCreateSpec{
+		NodeType: wikiNodeTypeOrigin,
+		ObjType:  "docx",
+		Title:    "Roadmap",
+	}
+	execution, err := runWikiNodeCreate(context.Background(), client, core.AsUser, spec)
+	if err != nil {
+		t.Fatalf("runWikiNodeCreate() error = %v", err)
+	}
+	if len(client.createInvoked) != 3 {
+		t.Fatalf("create invoked %d times, want 3", len(client.createInvoked))
+	}
+	if execution.Node.NodeToken != "wik_created" {
+		t.Fatalf("created node token = %q, want %q", execution.Node.NodeToken, "wik_created")
 	}
 }
 

@@ -5,8 +5,10 @@ package wiki
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/larksuite/cli/internal/core"
 	"github.com/larksuite/cli/internal/output"
@@ -22,7 +24,15 @@ const (
 	wikiResolvedByExplicitSpaceID = "explicit_space_id"
 	wikiResolvedByParentNode      = "parent_node_token"
 	wikiResolvedByMyLibrary       = "my_library"
+
+	wikiNodeCreateLockContentionCode = 131009
 )
+
+var wikiNodeCreateRetryDelays = []time.Duration{
+	250 * time.Millisecond,
+	500 * time.Millisecond,
+	time.Second,
+}
 
 var wikiObjectTypes = []string{
 	"sheet",
@@ -294,7 +304,7 @@ func runWikiNodeCreate(ctx context.Context, client wikiNodeCreateClient, identit
 		return nil, err
 	}
 
-	node, err := client.CreateNode(ctx, resolvedSpace.SpaceID, spec)
+	node, err := createWikiNodeWithRetry(ctx, client, resolvedSpace.SpaceID, spec)
 	if err != nil {
 		return nil, err
 	}
@@ -306,6 +316,43 @@ func runWikiNodeCreate(ctx context.Context, client wikiNodeCreateClient, identit
 		Node:          node,
 		ResolvedSpace: resolvedSpace,
 	}, nil
+}
+
+func createWikiNodeWithRetry(ctx context.Context, client wikiNodeCreateClient, spaceID string, spec wikiNodeCreateSpec) (*wikiNodeRecord, error) {
+	var lastErr error
+	for attempt := 0; attempt <= len(wikiNodeCreateRetryDelays); attempt++ {
+		node, err := client.CreateNode(ctx, spaceID, spec)
+		if err == nil {
+			return node, nil
+		}
+		lastErr = err
+		if !isWikiNodeCreateLockContention(err) || attempt == len(wikiNodeCreateRetryDelays) {
+			return nil, err
+		}
+		if err := sleepWikiNodeCreateRetry(ctx, wikiNodeCreateRetryDelays[attempt]); err != nil {
+			return nil, err
+		}
+	}
+	return nil, lastErr
+}
+
+func isWikiNodeCreateLockContention(err error) bool {
+	var exitErr *output.ExitError
+	if errors.As(err, &exitErr) && exitErr.Detail != nil && exitErr.Detail.Code == wikiNodeCreateLockContentionCode {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "lock contention")
+}
+
+func sleepWikiNodeCreateRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // resolveWikiNodeCreateSpace applies the shortcut's precedence rules:
