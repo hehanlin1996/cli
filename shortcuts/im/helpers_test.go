@@ -358,6 +358,16 @@ func TestOptimizeMarkdownStyle(t *testing.T) {
 			want:  "![alt](img_abc123) ",
 		},
 		{
+			name:  "strip bold around markdown link",
+			input: "**[click here](https://example.com/path_with_underscore)**",
+			want:  "[click here](https://example.com/path_with_underscore)",
+		},
+		{
+			name:  "strip bold inside markdown link text",
+			input: "[**click here**](https://example.com/path_with_underscore)",
+			want:  "[click here](https://example.com/path_with_underscore)",
+		},
+		{
 			name:  "empty input",
 			input: "",
 			want:  "",

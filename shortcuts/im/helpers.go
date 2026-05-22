@@ -789,16 +789,20 @@ func readMp4Duration(f fileio.File, fileSize int64) int64 {
 //  5. Compress excess blank lines
 //  6. Strip invalid image references (keep only img_xxx keys)
 var (
-	reH2toH6             = regexp.MustCompile(`(?m)^#{2,6} (.+)$`)
-	reH1                 = regexp.MustCompile(`(?m)^# (.+)$`)
-	reHasH1toH3          = regexp.MustCompile(`(?m)^#{1,3} `)
-	reConsecH            = regexp.MustCompile(`(?m)^(#{4,5} .+)\n{1,2}(#{4,5} )`)
-	reTableNoGap         = regexp.MustCompile(`(?m)^([^|\n].*)\n(\|.+\|)`)
-	reTableAfter         = regexp.MustCompile(`(?m)((?:^\|.+\|[^\S\n]*\n?)+)`)
-	reExcessNL           = regexp.MustCompile(`\n{3,}`)
-	reInvalidImg         = regexp.MustCompile(`!\[[^\]]*\]\(([^)\s]+)\)`)
-	reCodeBlock          = regexp.MustCompile("```[\\s\\S]*?```")
-	reBlankLineSeparator = regexp.MustCompile(`\n(?:[ \t]*\n)+`)
+	reH2toH6                = regexp.MustCompile(`(?m)^#{2,6} (.+)$`)
+	reH1                    = regexp.MustCompile(`(?m)^# (.+)$`)
+	reHasH1toH3             = regexp.MustCompile(`(?m)^#{1,3} `)
+	reConsecH               = regexp.MustCompile(`(?m)^(#{4,5} .+)\n{1,2}(#{4,5} )`)
+	reTableNoGap            = regexp.MustCompile(`(?m)^([^|\n].*)\n(\|.+\|)`)
+	reTableAfter            = regexp.MustCompile(`(?m)((?:^\|.+\|[^\S\n]*\n?)+)`)
+	reExcessNL              = regexp.MustCompile(`\n{3,}`)
+	reInvalidImg            = regexp.MustCompile(`!\[[^\]]*\]\(([^)\s]+)\)`)
+	reCodeBlock             = regexp.MustCompile("```[\\s\\S]*?```")
+	reBlankLineSeparator    = regexp.MustCompile(`\n(?:[ \t]*\n)+`)
+	reBoldWrappedLink       = regexp.MustCompile(`\*\*(!?\[[^\]\n]+\]\([^\)\s]+\))\*\*`)
+	reUnderscoreWrappedLink = regexp.MustCompile(`__(!?\[[^\]\n]+\]\([^\)\s]+\))__`)
+	reBoldLinkText          = regexp.MustCompile(`(!?\[)\*\*([^\]\n]+?)\*\*(\]\([^\)\s]+\))`)
+	reUnderscoreLinkText    = regexp.MustCompile(`(!?\[)__([^\]\n]+?)__(\]\([^\)\s]+\))`)
 )
 
 const (
@@ -843,6 +847,7 @@ func optimizeMarkdownStyle(text string) string {
 
 	r = reTableNoGap.ReplaceAllString(r, "$1\n\n$2")
 	r = reTableAfter.ReplaceAllString(r, "$1\n")
+	r = normalizeMarkdownLinkStyles(r)
 
 	r = restoreMarkdownCodeBlocks(r, codeBlocks)
 
@@ -861,6 +866,19 @@ func optimizeMarkdownStyle(text string) string {
 	}
 
 	return r
+}
+
+func normalizeMarkdownLinkStyles(text string) string {
+	for {
+		next := reBoldWrappedLink.ReplaceAllString(text, "$1")
+		next = reUnderscoreWrappedLink.ReplaceAllString(next, "$1")
+		next = reBoldLinkText.ReplaceAllString(next, "$1$2$3")
+		next = reUnderscoreLinkText.ReplaceAllString(next, "$1$2$3")
+		if next == text {
+			return text
+		}
+		text = next
+	}
 }
 
 func shouldUseSegmentedPost(markdown string) bool {
