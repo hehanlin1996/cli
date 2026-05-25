@@ -6,6 +6,7 @@ package doc
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -249,6 +250,44 @@ func TestDocsCreateV2PreservesBackendURL(t *testing.T) {
 	}
 }
 
+func TestDocsCreateV2AcceptsMarkdownAlias(t *testing.T) {
+	dir := t.TempDir()
+	withDocsWorkingDir(t, dir)
+	if err := os.WriteFile("body.md", []byte("# 标题\n\n正文"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	f, stdout, _, reg := cmdutil.TestFactory(t, docsCreateTestConfig(t, ""))
+	stub := registerDocsCreateAPIStub(reg, map[string]interface{}{
+		"document": map[string]interface{}{
+			"document_id": "doxcn_new_doc",
+			"revision_id": float64(1),
+			"url":         "https://tenant.larkoffice.com/docx/doxcn_new_doc",
+		},
+	})
+
+	err := runDocsCreateShortcut(t, f, stdout, []string{
+		"+create",
+		"--api-version", "v2",
+		"--markdown", "@body.md",
+		"--as", "user",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var body map[string]interface{}
+	if err := json.Unmarshal(stub.CapturedBody, &body); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+	if got, want := body["format"], "markdown"; got != want {
+		t.Fatalf("format = %#v, want %q", got, want)
+	}
+	if got, want := body["content"], "# 标题\n\n正文"; got != want {
+		t.Fatalf("content = %#v, want %q", got, want)
+	}
+}
+
 // ── V1 (MCP) tests ──
 
 func TestDocsCreateV1BotAutoGrantSuccess(t *testing.T) {
@@ -409,8 +448,8 @@ func docsCreateTestConfig(t *testing.T, userOpenID string) *core.CliConfig {
 	}
 }
 
-func registerDocsCreateAPIStub(reg *httpmock.Registry, data map[string]interface{}) {
-	reg.Register(&httpmock.Stub{
+func registerDocsCreateAPIStub(reg *httpmock.Registry, data map[string]interface{}) *httpmock.Stub {
+	stub := &httpmock.Stub{
 		Method: "POST",
 		URL:    "/open-apis/docs_ai/v1/documents",
 		Body: map[string]interface{}{
@@ -418,7 +457,9 @@ func registerDocsCreateAPIStub(reg *httpmock.Registry, data map[string]interface
 			"msg":  "ok",
 			"data": data,
 		},
-	})
+	}
+	reg.Register(stub)
+	return stub
 }
 
 func registerDocsCreateMCPStub(reg *httpmock.Registry, result map[string]interface{}) {
