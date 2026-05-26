@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -155,6 +156,15 @@ func transcriptRawStub(token string, body []byte) *httpmock.Stub {
 		Method:  "GET",
 		URL:     "/open-apis/minutes/v1/minutes/" + token + "/transcript",
 		RawBody: body,
+	}
+}
+
+func transcriptHTTPErrorStub(token string, status int) *httpmock.Stub {
+	return &httpmock.Stub{
+		Method: "GET",
+		URL:    "/open-apis/minutes/v1/minutes/" + token + "/transcript",
+		Status: status,
+		Body:   map[string]interface{}{"code": status, "msg": "transcript unavailable"},
 	}
 }
 
@@ -698,6 +708,39 @@ func TestNotes_TranscriptDefaultLayout(t *testing.T) {
 
 	if _, err := os.Stat("artifact-Meeting Title-tok001"); err == nil {
 		t.Errorf("legacy artifact dir should not appear under default layout")
+	}
+}
+
+func TestNotes_TranscriptHTTPErrorCountsAsFailedQuery(t *testing.T) {
+	chdirForTest(t)
+
+	f, stdout, stderr, reg := cmdutil.TestFactory(t, defaultConfig())
+	reg.Register(minuteGetStub("tok001", "", "Meeting Title"))
+	reg.Register(emptyArtifactsStub("tok001"))
+	reg.Register(transcriptHTTPErrorStub("tok001", http.StatusBadRequest))
+
+	err := mountAndRun(t, VCNotes, []string{
+		"+notes", "--minute-tokens", "tok001", "--as", "user",
+	}, f, stdout)
+	if err == nil {
+		t.Fatal("expected transcript download HTTP error to fail the query")
+	}
+	if !strings.Contains(stderr.String(), "[vc +notes] done: 1 total, 0 succeeded, 1 failed") {
+		t.Fatalf("stderr should count transcript failure as failed query, got:\n%s", stderr.String())
+	}
+
+	var out map[string]any
+	if decodeErr := json.Unmarshal(stdout.Bytes(), &out); decodeErr != nil {
+		t.Fatalf("failed to parse output: %v", decodeErr)
+	}
+	data, _ := out["data"].(map[string]any)
+	notes, _ := data["notes"].([]any)
+	if len(notes) != 1 {
+		t.Fatalf("notes length = %d, want 1", len(notes))
+	}
+	note, _ := notes[0].(map[string]any)
+	if got, _ := note["error"].(string); !strings.Contains(got, "failed to download transcript: HTTP 400") {
+		t.Fatalf("note error = %q, want transcript HTTP 400 failure", got)
 	}
 }
 

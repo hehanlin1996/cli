@@ -307,12 +307,15 @@ func fetchNoteByMinuteToken(ctx context.Context, runtime *common.RuntimeContext,
 	// path 2 & 3: AI artifacts are collected under the artifacts field.
 	artifacts := map[string]any{}
 	fetchInlineArtifacts(runtime, minuteToken, artifacts)
-	transcriptPath := downloadTranscriptFile(runtime, minuteToken, title)
+	transcriptPath, transcriptErr := downloadTranscriptFile(runtime, minuteToken, title)
 	if transcriptPath != "" {
 		artifacts["transcript_file"] = transcriptPath
 	}
 	if len(artifacts) > 0 {
 		result["artifacts"] = artifacts
+	}
+	if transcriptErr != nil {
+		result["error"] = transcriptErr.Error()
 	}
 
 	return result
@@ -337,8 +340,8 @@ func sanitizeDirName(title, minuteToken string) string {
 	return fmt.Sprintf("artifact-%s-%s", safe, minuteToken)
 }
 
-// downloadTranscriptFile downloads transcript to a local file and returns the file path (empty on failure).
-func downloadTranscriptFile(runtime *common.RuntimeContext, minuteToken string, title string) string {
+// downloadTranscriptFile downloads transcript to a local file and returns the file path.
+func downloadTranscriptFile(runtime *common.RuntimeContext, minuteToken string, title string) (string, error) {
 	errOut := runtime.IO().ErrOut
 
 	// With no --output-dir the default layout shares the directory with
@@ -355,7 +358,7 @@ func downloadTranscriptFile(runtime *common.RuntimeContext, minuteToken string, 
 	if !runtime.Bool("overwrite") {
 		if _, statErr := runtime.FileIO().Stat(transcriptPath); statErr == nil {
 			fmt.Fprintf(errOut, "%s transcript already exists: %s (use --overwrite to replace)\n", logPrefix, transcriptPath)
-			return transcriptPath
+			return transcriptPath, nil
 		}
 	}
 
@@ -371,29 +374,32 @@ func downloadTranscriptFile(runtime *common.RuntimeContext, minuteToken string, 
 	}, larkcore.WithFileDownload())
 	if err != nil {
 		fmt.Fprintf(errOut, "%s failed to download transcript: %v\n", logPrefix, err)
-		return ""
+		return "", fmt.Errorf("failed to download transcript: %v", err)
 	}
 	if apiResp.StatusCode >= 400 {
 		fmt.Fprintf(errOut, "%s failed to download transcript: HTTP %d\n", logPrefix, apiResp.StatusCode)
-		return ""
+		return "", fmt.Errorf("failed to download transcript: HTTP %d", apiResp.StatusCode)
 	}
 	if len(apiResp.RawBody) == 0 {
 		fmt.Fprintf(errOut, "%s transcript is empty (not available for this minute)\n", logPrefix)
-		return ""
+		return "", fmt.Errorf("transcript is empty or not available")
 	}
 	if _, err := runtime.FileIO().Save(transcriptPath, fileio.SaveOptions{}, bytes.NewReader(apiResp.RawBody)); err != nil {
 		var me *fileio.MkdirError
+		message := "failed to write transcript"
 		switch {
 		case errors.Is(err, fileio.ErrPathValidation):
 			fmt.Fprintf(errOut, "%s invalid transcript path: %v\n", logPrefix, err)
+			message = "invalid transcript path"
 		case errors.As(err, &me):
 			fmt.Fprintf(errOut, "%s failed to create directory: %v\n", logPrefix, err)
+			message = "failed to create transcript directory"
 		default:
 			fmt.Fprintf(errOut, "%s failed to write transcript: %v\n", logPrefix, err)
 		}
-		return ""
+		return "", fmt.Errorf("%s: %v", message, err)
 	}
-	return transcriptPath
+	return transcriptPath, nil
 }
 
 // fetchInlineArtifacts fetches summary/todos/chapters from artifacts API and writes them inline into result map.

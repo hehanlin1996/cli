@@ -138,7 +138,7 @@ lark-cli im <resource> <method> [flags] # 调用 API
 
 | 方法 | 所需 scope |
 |------|-----------|
-| `chats.create` | `im:chat:create` |
+| `chats.create` | bot: `im:chat:create`; user: `im:chat:create_by_user` |
 | `chats.get` | `im:chat:read` |
 | `chats.link` | `im:chat:read` |
 | `chats.update` | `im:chat:update` |
@@ -159,4 +159,3 @@ lark-cli im <resource> <method> [flags] # 调用 API
 | `pins.create` | `im:message.pins:write_only` |
 | `pins.delete` | `im:message.pins:write_only` |
 | `pins.list` | `im:message.pins:read` |
-
