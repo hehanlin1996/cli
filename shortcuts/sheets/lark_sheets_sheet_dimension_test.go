@@ -14,6 +14,7 @@ import (
 
 	"github.com/larksuite/cli/internal/cmdutil"
 	"github.com/larksuite/cli/internal/httpmock"
+	"github.com/larksuite/cli/internal/output"
 	"github.com/larksuite/cli/shortcuts/common"
 )
 
@@ -892,6 +893,29 @@ func TestSheetDeleteDimensionDryRunWithURL(t *testing.T) {
 	}
 }
 
+func TestSheetDeleteDimensionRequiresConfirmation(t *testing.T) {
+	f, stdout, _, _ := cmdutil.TestFactory(t, sheetsTestConfig())
+
+	err := mountAndRunSheets(t, SheetDeleteDimension, []string{
+		"+delete-dimension",
+		"--spreadsheet-token", "shtTOKEN",
+		"--sheet-id", "sheet1",
+		"--dimension", "ROWS",
+		"--start-index", "3",
+		"--end-index", "7",
+		"--as", "user",
+	}, f, stdout)
+	if err == nil {
+		t.Fatal("expected confirmation error, got nil")
+	}
+	if got := output.ExitCodeOf(err); got != output.ExitConfirmationRequired {
+		t.Fatalf("exit code = %d, want %d; error = %v", got, output.ExitConfirmationRequired, err)
+	}
+	if !strings.Contains(err.Error(), "sheets +delete-dimension requires confirmation") {
+		t.Fatalf("error should mention confirmation for sheets +delete-dimension, got: %v", err)
+	}
+}
+
 func TestSheetDeleteDimensionExecuteSuccess(t *testing.T) {
 	f, stdout, _, reg := cmdutil.TestFactory(t, sheetsTestConfig())
 	stub := &httpmock.Stub{
@@ -911,6 +935,7 @@ func TestSheetDeleteDimensionExecuteSuccess(t *testing.T) {
 		"--dimension", "ROWS",
 		"--start-index", "3",
 		"--end-index", "7",
+		"--yes",
 		"--as", "user",
 	}, f, stdout)
 	if err != nil {
@@ -948,6 +973,7 @@ func TestSheetDeleteDimensionExecuteWithURL(t *testing.T) {
 		"--dimension", "COLUMNS",
 		"--start-index", "1",
 		"--end-index", "2",
+		"--yes",
 		"--as", "user",
 	}, f, stdout)
 	if err != nil {
@@ -971,6 +997,7 @@ func TestSheetDeleteDimensionExecuteAPIError(t *testing.T) {
 		"--dimension", "ROWS",
 		"--start-index", "3",
 		"--end-index", "7",
+		"--yes",
 		"--as", "user",
 	}, f, nil)
 	if err == nil {

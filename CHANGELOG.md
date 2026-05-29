@@ -2,6 +2,68 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v1.0.44] - 2026-05-29
+
+### Features
+
+- **base**: Add dashboard block data shortcut and workflow docs (#1067)
+- **im**: Support `--types` flag for listing p2p single chats in `chat-list` (#1077)
+- **agent**: Add agent header support (#1158)
+
+### Bug Fixes
+
+- **im**: Correct 64-bit MP4 box size handling to prevent panic on crafted media (#1165)
+- **install**: Detect curl version before using `--ssl-revoke-best-effort` (#1124)
+- **vc**: Correct `--minute-token` to `--minute-tokens` in recording reference (#1170)
+- **whiteboard**: Fix whiteboard skill (#1166)
+
+## [v1.0.43] - 2026-05-28
+
+### Features
+
+- **event**: Support `note` generated event (#1159)
+- **config**: Decouple `--lang` preference from TUI display language (#1132)
+- **mail**: Add HTML lint library with Larksuite-native autofix for `lark-mail` (#1019)
+
+### Bug Fixes
+
+- **config**: Propagate `Lang` across credential boundary; respect `CurrentApp` in priorLang (#1157)
+- **config**: Allow lark-channel bind source override (#1154)
+- **im**: Clarify `messages-send` dry-run chat membership (#1150)
+- **base**: Include `log_id` in attachment media errors (#1133)
+
+### Performance
+
+- **im**: Parallelize reactions, thread_replies, and merge_forward fetches (#1146)
+
+### Documentation
+
+- **im**: Update IM skill urgent APIs (#1153)
+
+## [v1.0.42] - 2026-05-27
+
+### Features
+
+- **mail**: Add `+draft-send` shortcut for batch draft sending (#1017)
+- **im**: Enrich messages with reactions and output `update_time` (#1095)
+- **schema**: Output JSON spec envelope for all API commands (#1048)
+- **event**: Support `vc` / `note` / `minute` events (#1113)
+- **drive**: Add secure label shortcuts (#985)
+- **affordance**: Use description and command in affordance example schema (#1126)
+
+### Bug Fixes
+
+- **docs**: Remove unsupported `fetch` text format (#1109)
+
+### Refactor
+
+- **auth**: Drop duplicate top-level user fields in `status` (#1128)
+
+### Documentation
+
+- **doc**: Document block anchor URLs in `lark-doc` skill (#1120)
+- **whiteboard**: Improve SVG/Mermaid instructions (#1097)
+
 ## [v1.0.41] - 2026-05-26
 
 ### Features
@@ -886,6 +948,9 @@ Bundled AI agent skills for intelligent assistance:
 - Bilingual documentation (English & Chinese).
 - CI/CD pipelines: linting, testing, coverage reporting, and automated releases.
 
+[v1.0.44]: https://github.com/larksuite/cli/releases/tag/v1.0.44
+[v1.0.43]: https://github.com/larksuite/cli/releases/tag/v1.0.43
+[v1.0.42]: https://github.com/larksuite/cli/releases/tag/v1.0.42
 [v1.0.41]: https://github.com/larksuite/cli/releases/tag/v1.0.41
 [v1.0.40]: https://github.com/larksuite/cli/releases/tag/v1.0.40
 [v1.0.39]: https://github.com/larksuite/cli/releases/tag/v1.0.39
