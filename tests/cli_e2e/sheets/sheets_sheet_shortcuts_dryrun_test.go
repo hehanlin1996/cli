@@ -209,6 +209,26 @@ func TestSheets_SheetShortcutsDryRun(t *testing.T) {
 			},
 		},
 		{
+			name: "delete-dimension",
+			args: []string{
+				"sheets", "+delete-dimension",
+				"--spreadsheet-token", "shtDryRun",
+				"--sheet-id", "sheet1",
+				"--dimension", "ROWS",
+				"--start-index", "2",
+				"--end-index", "4",
+				"--dry-run",
+			},
+			wantURL: "/open-apis/sheets/v2/spreadsheets/shtDryRun/dimension_range",
+			wantFn: func(t *testing.T, out string) {
+				require.Equal(t, "DELETE", gjson.Get(out, "api.0.method").String(), "stdout:\n%s", out)
+				require.Equal(t, "sheet1", gjson.Get(out, "api.0.body.dimension.sheetId").String(), "stdout:\n%s", out)
+				require.Equal(t, "ROWS", gjson.Get(out, "api.0.body.dimension.majorDimension").String(), "stdout:\n%s", out)
+				require.Equal(t, int64(2), gjson.Get(out, "api.0.body.dimension.startIndex").Int(), "stdout:\n%s", out)
+				require.Equal(t, int64(4), gjson.Get(out, "api.0.body.dimension.endIndex").Int(), "stdout:\n%s", out)
+			},
+		},
+		{
 			name: "update-sheet",
 			args: []string{
 				"sheets", "+update-sheet",

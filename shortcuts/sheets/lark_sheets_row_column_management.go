@@ -308,7 +308,7 @@ var SheetDeleteDimension = common.Shortcut{
 	Service:     "sheets",
 	Command:     "+delete-dimension",
 	Description: "Delete rows or columns",
-	Risk:        "write",
+	Risk:        "high-risk-write",
 	Scopes:      []string{"sheets:spreadsheet:write_only", "sheets:spreadsheet:read"},
 	AuthTypes:   []string{"user", "bot"},
 	Flags: []common.Flag{
