@@ -35,8 +35,8 @@ type initMsg struct {
 
 var initMsgZh = &initMsg{
 	SelectAction:         "选择操作",
-	CreateNewApp:         "一键配置应用 (推荐) ",
-	ConfigExistingApp:    "手动输入应用凭证",
+	CreateNewApp:         "一键配置新应用",
+	ConfigExistingApp:    "使用已有应用",
 	Platform:             "平台",
 	SelectPlatform:       "选择平台",
 	Feishu:               "飞书",
@@ -53,8 +53,8 @@ var initMsgZh = &initMsg{
 
 var initMsgEn = &initMsg{
 	SelectAction:         "Select action",
-	CreateNewApp:         "Set up your app with one click (Recommended)",
-	ConfigExistingApp:    "Enter app credentials yourself",
+	CreateNewApp:         "Set up new app",
+	ConfigExistingApp:    "Use existing app",
 	Platform:             "Platform",
 	SelectPlatform:       "Select platform",
 	Feishu:               "Feishu",

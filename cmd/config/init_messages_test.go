@@ -88,6 +88,64 @@ func TestInitMsg_FormatStrings(t *testing.T) {
 	}
 }
 
+func TestInitMsgZh_ConfigExistingAppMentionsExisting(t *testing.T) {
+	msg := getInitMsg(i18n.LangZhCN)
+	// The "use existing app" option must clearly convey "已有" (existing) so
+	// users can discover it without guidance — regression test for #68.
+	if !containsChinese(msg.ConfigExistingApp, "已有") {
+		t.Errorf("zh ConfigExistingApp should contain '已有', got %q", msg.ConfigExistingApp)
+	}
+}
+
+func TestInitMsgZh_CreateNewAppDoesNotPushRecommend(t *testing.T) {
+	msg := getInitMsg(i18n.LangZhCN)
+	// "推荐" label on the first option biases users away from the "existing"
+	// option — regression test for #68.
+	if containsChinese(msg.CreateNewApp, "推荐") {
+		t.Errorf("zh CreateNewApp should not contain '推荐', got %q", msg.CreateNewApp)
+	}
+}
+
+func TestInitMsgEn_ConfigExistingAppMentionsExisting(t *testing.T) {
+	msg := getInitMsg(i18n.LangEnUS)
+	if !containsWord(msg.ConfigExistingApp, "existing") {
+		t.Errorf("en ConfigExistingApp should contain 'existing', got %q", msg.ConfigExistingApp)
+	}
+}
+
+func TestInitMsgEn_CreateNewAppDoesNotPushRecommended(t *testing.T) {
+	msg := getInitMsg(i18n.LangEnUS)
+	if containsWord(msg.CreateNewApp, "Recommended") {
+		t.Errorf("en CreateNewApp should not contain 'Recommended', got %q", msg.CreateNewApp)
+	}
+}
+
+func containsChinese(s, sub string) bool {
+	for _, r := range s {
+		if r >= 0x4e00 && r <= 0x9fff {
+			// Has CJK — do substring check
+		}
+	}
+	return len(sub) > 0 && containsSubstring(s, sub)
+}
+
+func containsSubstring(s, sub string) bool {
+	return len(s) >= len(sub) && (s == sub || len(sub) == 0 || (len(s) > 0 && findSubstring(s, sub)))
+}
+
+func findSubstring(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
+
+func containsWord(s, word string) bool {
+	return findSubstring(s, word)
+}
+
 func TestGetInitMsg_BilingualCollapse(t *testing.T) {
 	// The TUI is bilingual (zh + en). Only English-bucket languages return the
 	// English struct — by canonical locale ("en_us") or legacy short ("en").
