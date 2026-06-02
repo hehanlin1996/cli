@@ -277,6 +277,92 @@ describe("resolveMirrorUrls", () => {
       [DEFAULT]
     );
   });
+
+  describe("LARK_CLI_MIRROR_HOST override", () => {
+    it("uses LARK_CLI_MIRROR_HOST as fallback instead of npmmirror", () => {
+      const custom = "https://mirror.example.com/-/binary/lark-cli/v1.0.0/lark-cli-1.0.0-linux-amd64.tar.gz";
+      assert.deepEqual(
+        resolveMirrorUrls(
+          { LARK_CLI_MIRROR_HOST: "https://mirror.example.com" },
+          ARCHIVE,
+          VERSION
+        ),
+        [custom]
+      );
+    });
+
+    it("does not include npmmirror when LARK_CLI_MIRROR_HOST is set to a different host", () => {
+      const urls = resolveMirrorUrls(
+        { LARK_CLI_MIRROR_HOST: "https://mirror.example.com" },
+        ARCHIVE,
+        VERSION
+      );
+      for (const u of urls) {
+        assert.match(u, /mirror\.example\.com/, "npmmirror should not appear when override is set");
+      }
+    });
+
+    it("combines LARK_CLI_MIRROR_HOST with non-default npm_config_registry", () => {
+      assert.deepEqual(
+        resolveMirrorUrls(
+          {
+            npm_config_registry: "https://corp.example.com/repository/npm-public/",
+            LARK_CLI_MIRROR_HOST: "https://mirror.example.com",
+          },
+          ARCHIVE,
+          VERSION
+        ),
+        [
+          "https://corp.example.com/repository/npm-public/-/binary/lark-cli/v1.0.0/lark-cli-1.0.0-linux-amd64.tar.gz",
+          "https://mirror.example.com/-/binary/lark-cli/v1.0.0/lark-cli-1.0.0-linux-amd64.tar.gz",
+        ]
+      );
+    });
+
+    it("ignores non-https LARK_CLI_MIRROR_HOST and falls back to npmmirror", () => {
+      assert.deepEqual(
+        resolveMirrorUrls(
+          { LARK_CLI_MIRROR_HOST: "http://insecure.example.com" },
+          ARCHIVE,
+          VERSION
+        ),
+        [DEFAULT]
+      );
+    });
+
+    it("ignores empty LARK_CLI_MIRROR_HOST and falls back to npmmirror", () => {
+      assert.deepEqual(
+        resolveMirrorUrls(
+          { LARK_CLI_MIRROR_HOST: "" },
+          ARCHIVE,
+          VERSION
+        ),
+        [DEFAULT]
+      );
+    });
+
+    it("strips trailing slashes from LARK_CLI_MIRROR_HOST", () => {
+      assert.deepEqual(
+        resolveMirrorUrls(
+          { LARK_CLI_MIRROR_HOST: "https://mirror.example.com///" },
+          ARCHIVE,
+          VERSION
+        ),
+        ["https://mirror.example.com/-/binary/lark-cli/v1.0.0/lark-cli-1.0.0-linux-amd64.tar.gz"]
+      );
+    });
+
+    it("does not duplicate when LARK_CLI_MIRROR_HOST equals npmmirror", () => {
+      assert.deepEqual(
+        resolveMirrorUrls(
+          { LARK_CLI_MIRROR_HOST: "https://registry.npmmirror.com" },
+          ARCHIVE,
+          VERSION
+        ),
+        [DEFAULT]
+      );
+    });
+  });
 });
 
 describe("isCurlVersionSupported", () => {

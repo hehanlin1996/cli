@@ -49,13 +49,19 @@ const dest = path.join(binDir, NAME + (isWindows ? ".exe" : ""));
 //                                Artifactory, …), include the derived path
 //                                first. Many of these proxies don't actually
 //                                host /-/binary/<pkg>/..., so we ALWAYS
-//                                append the public npmmirror as a final
-//                                fallback so the install does not regress
-//                                from the previous behavior of "GitHub →
-//                                npmmirror".
-//   2. registry.npmmirror.com  — public China mirror, always tried last.
-// The default public npmjs registry is skipped in step 1 because it does not
-// host binaries under /-/binary/...
+//                                append a public mirror as a final fallback
+//                                so the install does not regress from the
+//                                previous behavior of "GitHub → npmmirror".
+//   2. LARK_CLI_MIRROR_HOST   — when set, overrides the default fallback
+//                                mirror. Overseas users who cannot reach
+//                                registry.npmmirror.com can point this to an
+//                                accessible mirror. Must be https. Empty or
+//                                non-https values are silently ignored.
+//   3. registry.npmmirror.com  — public China mirror, used as the final
+//                                fallback when LARK_CLI_MIRROR_HOST is not
+//                                set. The default public npmjs registry is
+//                                skipped in step 1 because it does not host
+//                                binaries under /-/binary/...
 //
 // Non-https / malformed npm_config_registry is silently ignored so npm users
 // with http-only internal registries don't have their installs broken.
@@ -63,13 +69,24 @@ function resolveMirrorUrls(env, archive, version) {
   const binaryPath = `/-/binary/lark-cli/v${version}/${archive}`;
   const defaultUrl = joinUrl(DEFAULT_MIRROR_HOST, binaryPath);
 
+  // Determine the fallback mirror: LARK_CLI_MIRROR_HOST overrides npmmirror
+  // for overseas/restricted-network users.
+  const mirrorHost = (env.LARK_CLI_MIRROR_HOST || "").trim();
+  let fallbackUrl;
+  if (mirrorHost && isValidDownloadBase(mirrorHost)) {
+    const base = new URL(mirrorHost);
+    fallbackUrl = joinUrl(base.origin + base.pathname, binaryPath);
+  } else {
+    fallbackUrl = defaultUrl;
+  }
+
   const urls = [];
   const registry = (env.npm_config_registry || "").trim();
   if (registry && !isDefaultNpmjsRegistry(registry) && isValidDownloadBase(registry)) {
     const base = new URL(registry);
     urls.push(joinUrl(base.origin + base.pathname, binaryPath));
   }
-  if (!urls.includes(defaultUrl)) urls.push(defaultUrl);
+  if (!urls.includes(fallbackUrl)) urls.push(fallbackUrl);
   return urls;
 }
 
@@ -337,7 +354,9 @@ if (require.main === module) {
       `  export https_proxy=http://your-proxy:port\n` +
       `  npm install -g @larksuite/cli\n\n` +
       `  # 2. Point to a corporate npm mirror that proxies /-/binary/lark-cli/...:\n` +
-      `  npm install -g @larksuite/cli --registry=https://your-corp-mirror/`
+      `  npm install -g @larksuite/cli --registry=https://your-corp-mirror/\n\n` +
+      `  # 3. Override the binary download mirror (e.g. for overseas networks):\n` +
+      `  LARK_CLI_MIRROR_HOST=https://your-mirror.example.com npm install -g @larksuite/cli`
     );
     process.exit(1);
   }
