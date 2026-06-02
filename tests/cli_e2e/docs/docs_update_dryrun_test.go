@@ -68,3 +68,43 @@ func TestDocs_UpdateDryRunSuppressesSemanticWarnings(t *testing.T) {
 		}
 	}
 }
+
+// TestDocs_UpdateV2OverwriteDryRunSuppressesCommentLossWarning asserts that
+// the v2 overwrite comment-loss warning is NOT emitted on the --dry-run path,
+// consistent with how v1 semantic warnings are suppressed during planning.
+// The unit test in TestOverwriteCommentWarningV2 proves the helper emits the
+// warning for --command overwrite; this E2E ensures dry-run never shows it.
+func TestDocs_UpdateV2OverwriteDryRunSuppressesCommentLossWarning(t *testing.T) {
+	t.Setenv("LARKSUITE_CLI_APP_ID", "app")
+	t.Setenv("LARKSUITE_CLI_APP_SECRET", "secret")
+	t.Setenv("LARKSUITE_CLI_BRAND", "feishu")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+
+	result, err := clie2e.RunCmd(ctx, clie2e.Request{
+		Args: []string{
+			"docs", "+update",
+			"--api-version", "v2",
+			"--doc", "doxcnDryRunE2E",
+			"--command", "overwrite",
+			"--content", "<title>Test</title><p>Overwrite content</p>",
+			"--dry-run",
+		},
+		DefaultAs: "bot",
+	})
+	require.NoError(t, err)
+	result.AssertExitCode(t, 0)
+
+	combined := result.Stdout + "\n" + result.Stderr
+	for _, needle := range []string{
+		"warning:",
+		"comment",
+		"overwrite permanently deletes",
+	} {
+		if strings.Contains(combined, needle) {
+			t.Errorf("dry-run output must not surface overwrite comment-loss warning %q\nstdout:\n%s\nstderr:\n%s",
+				needle, result.Stdout, result.Stderr)
+		}
+	}
+}

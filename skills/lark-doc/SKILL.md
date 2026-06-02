@@ -30,6 +30,9 @@ lark-cli docs +update --api-version v2 --doc "文档URL或token" --command appen
 > **格式选择规则（全局）：**
 > - **创建 / 导入场景**（`docs +create`，或 `docs +update --command append/overwrite` 的整段写入）：XML 和 Markdown 都可以。用户提供 `.md` 本地文件、或明确说"导入 Markdown"时，直接用 Markdown；否则默认 XML（可用 callout、grid、checkbox 等富 block）。
 > - **精准编辑场景**（`docs +update` 的 `str_replace` / `block_insert_after` / `block_replace` / `block_delete` / `block_move_after` 等局部精修指令）：优先使用 XML（`--doc-format xml`，即默认值）。XML 能稳定表达 block 结构和样式，局部精修更可控；不要因为 Markdown 更简单就自行切换。
+>
+> **⛔ overwrite 评论丢失警告：**
+> overwrite 会清空文档全部内容后重写，**所有评论永久丢失且不可恢复**。当用户只要求修改文档的某一部分（某节/某段/某文字）时，**禁止使用 overwrite**，必须使用 `block_replace`/`str_replace`/`block_insert_after` 等局部编辑指令。详见 [`lark-doc-update-workflow.md`](references/style/lark-doc-update-workflow.md) 的 overwrite 使用决策规则。
 
 ## 快速决策
 - 用户需要“某个 block 的直达链接 / 锚点链接”时：返回 `文档基础 URL#block_id`。如果当前只有文档 URL 没有 block_id，先用 `docs +fetch --detail with-ids` 拿到目标 block 的 id

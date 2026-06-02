@@ -10,9 +10,25 @@
 4. **Iterate（迭代）** — 如需调整，回到 Plan 继续循环
 
 ## 核心原则：精准手术优于全量覆盖
+
 1. **精准手术**：只改用户指定的 block，不改其他 block。
 2. **全量覆盖**：如果用户明确要改整篇，才用 `overwrite` 命令。
 3. **保真约束**：改写时原文里的 `<cite type="user">`（@人）、`<cite type="doc">`（@文档）、`<img>`、`<source>`、`<whiteboard>`、`<sheet>`、`<bitable>`、`<synced_reference>` 等行内组件和资源块一律原样保留（含所有 token / user-id / doc-id 属性），不许替换成纯文本姓名、链接或占位符。
+
+### ⛔ overwrite 使用决策规则（MUST 遵守）
+
+overwrite 会**清空文档全部内容后重写**，导致文档中所有评论**永久丢失且不可恢复**。评论是团队协作的核心资产，一旦丢失不可找回。因此：
+
+| 用户意图 | 必须使用的指令 | 禁止使用的指令 |
+|----------|---------------|---------------|
+| 修改某个子章节/段落 | `block_replace` + `--block-id` | ~~overwrite~~ |
+| 修改某段文字 | `str_replace` + `--pattern` | ~~overwrite~~ |
+| 在某处插入内容 | `block_insert_after` + `--block-id` | ~~overwrite~~ |
+| 删除某个 block | `block_delete` + `--block-id` | ~~overwrite~~ |
+| 移动某个 block | `block_move_after` | ~~overwrite~~ |
+| **明确要求重建整篇文档**（用户已知评论丢失风险） | `overwrite` | — |
+
+**判断标准：** 如果用户只表达了「更新这一节」「修改这一段」「改一下这里的文字」等局部编辑意图，即使你不确定具体用哪个局部指令，也**禁止使用 overwrite**。应先 `docs +fetch --detail with-ids` 获取文档结构和 block ID，再选择合适的局部编辑指令。
 
 ## 工作流程
 

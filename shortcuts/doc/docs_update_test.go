@@ -8,6 +8,42 @@ import (
 	"testing"
 )
 
+// ── overwrite-comment-warning tests ──
+
+func TestOverwriteCommentWarningV2(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		command string
+		want    bool
+	}{
+		{name: "overwrite triggers comment-loss warning", command: "overwrite", want: true},
+		{name: "append does not trigger comment-loss warning", command: "append", want: false},
+		{name: "block_replace does not trigger comment-loss warning", command: "block_replace", want: false},
+		{name: "str_replace does not trigger comment-loss warning", command: "str_replace", want: false},
+		{name: "block_insert_after does not trigger comment-loss warning", command: "block_insert_after", want: false},
+		{name: "block_delete does not trigger comment-loss warning", command: "block_delete", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := overwriteCommentLossWarning(tt.command)
+			hasWarn := got != ""
+			if hasWarn != tt.want {
+				t.Fatalf("overwriteCommentLossWarning(%q) = %q, want non-empty=%v", tt.command, got, tt.want)
+			}
+			if tt.want {
+				for _, sub := range []string{"comment", "overwrite", "block_replace"} {
+					if !strings.Contains(got, sub) {
+						t.Errorf("warning should contain %q, got: %s", sub, got)
+					}
+				}
+			}
+		})
+	}
+}
+
 // ── V2 tests ──
 
 func TestValidCommandsV2(t *testing.T) {

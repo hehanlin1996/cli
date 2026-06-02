@@ -40,7 +40,7 @@
 | `block_copy_insert_after` | 复制源 block 并插入到锚点之后（源块不变） | `--block-id` `--src-block-ids` |
 | `block_replace` | 替换指定 block（同一 block 仅限一次） | `--block-id` `--content` |
 | `block_delete` | 删除指定 block（逗号分隔可批量） | `--block-id` |
-| `overwrite` | ⚠️ 清空文档后全文重写（可能丢失图片、评论） | `--content` |
+| `overwrite` | ⚠️ 清空文档后全文重写（**评论不可恢复**，详见下方注意事项） | `--content` |
 | `append` | 在文档末尾追加内容（等价于 `block_insert_after --block-id -1`） | `--content` |
 | `block_move_after` | 移动已有 block 到指定位置 | `--block-id` + (`--content` 或 `--src-block-ids`) |
 
@@ -128,7 +128,20 @@ lark-cli docs +update --api-version v2 --doc "<doc_id>" --command overwrite \
   --content '<title>全新文档</title><h1>概述</h1><p>新的内容</p>'
 ```
 
-> ⚠️ 会清空文档后重写，可能丢失图片、评论等。仅在需要完全重建文档时使用。
+> **⛔ overwrite 评论丢失风险（不可恢复）**
+>
+> overwrite 会**清空文档全部内容后重写**，文档中所有评论将被永久删除且**无法恢复**。评论是团队协作的核心资产，一旦丢失不可找回。
+>
+> **决策规则：**
+> - 当用户只要求修改文档的**某一部分**（某节/某段/某文字）时，**禁止使用 overwrite**，必须使用 `block_replace`/`str_replace`/`block_insert_after` 等局部编辑指令
+> - 只有当用户**明确要求重建整篇文档**，且已知晓评论丢失风险时，才可使用 overwrite
+> - 即使使用 overwrite，也建议先用 `docs +fetch` 备份当前内容
+>
+> **只改子章节的正确做法**（参见下方"只改子章节"工作流示例）：
+> 1. `docs +fetch --api-version v2 --detail with-ids` 获取目标段落的 block ID
+> 2. 用 `block_replace --block-id <目标block_id>` 替换指定段落
+> 3. 用 `str_replace --pattern "旧文字" --content "新文字"` 替换行内文字
+> 4. 用 `block_insert_after --block-id <锚点block_id>` 在指定位置后插入新内容
 
 ### append — 在文档末尾追加
 
@@ -218,6 +231,42 @@ lark-cli docs +update --api-version v2 --doc "<doc_id>" --command block_move_aft
 lark-cli docs +update --api-version v2 --doc "<doc_id>" --command str_replace \
   --pattern "v1.0" --content "v2.0"
 ```
+
+### 只改子章节（禁止 overwrite）
+
+当用户只想修改文档的某个子章节/段落/文字时，**必须使用局部编辑，禁止 overwrite**。以下是完整操作示例：
+
+**场景：用户要求更新文档中的「部署流程」章节**
+
+1. **获取文档目录，定位目标章节**：
+   ```bash
+   lark-cli docs +fetch --api-version v2 --doc "<doc_id>" --scope outline --max-depth 3
+   ```
+
+2. **精读目标章节，获取 block ID**：
+   ```bash
+   lark-cli docs +fetch --api-version v2 --doc "<doc_id>" \
+     --scope section --start-block-id <目标标题id> --detail with-ids
+   ```
+
+3. **替换目标段落**（保留其他内容和所有评论）：
+   ```bash
+   # 替换整个 block
+   lark-cli docs +update --api-version v2 --doc "<doc_id>" --command block_replace \
+     --block-id "blkcnTargetBlock" --content '<p>更新后的部署流程内容</p>'
+
+   # 或替换行内文字
+   lark-cli docs +update --api-version v2 --doc "<doc_id>" --command str_replace \
+     --pattern "旧步骤" --content "新步骤"
+   ```
+
+4. **如需新增内容**：
+   ```bash
+   lark-cli docs +update --api-version v2 --doc "<doc_id>" --command block_insert_after \
+     --block-id "blkcnAnchorBlock" --content '<p>新增的说明段落</p>'
+   ```
+
+> **关键原则：只改用户指定的 block，不动其他 block。** 这样文档中的评论、图片、画板等资源都会完整保留。
 
 ## 画板处理
 

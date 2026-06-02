@@ -118,8 +118,28 @@ func dryRunUpdateV2(_ context.Context, runtime *common.RuntimeContext) *common.D
 		Set("document_id", ref.Token)
 }
 
+// overwriteCommentLossWarning returns a non-empty warning when the user
+// selects the "overwrite" command, which clears the entire document body
+// and permanently deletes all comments. Comments are a core collaboration
+// asset and cannot be recovered once lost. The warning nudges the caller
+// toward block_replace or str_replace, which preserve comments.
+func overwriteCommentLossWarning(command string) string {
+	if command != "overwrite" {
+		return ""
+	}
+	return "overwrite permanently deletes all document comments (不可恢复). " +
+		"If you only need to modify a section, use block_replace or str_replace instead."
+}
+
 func executeUpdateV2(_ context.Context, runtime *common.RuntimeContext) error {
 	ref, _ := parseDocumentRef(runtime.Str("doc"))
+
+	// Emit comment-loss warning for overwrite before the API call, even if
+	// the call later fails — the warning is advisory and non-blocking.
+	cmd := runtime.Str("command")
+	if w := overwriteCommentLossWarning(cmd); w != "" {
+		fmt.Fprintf(runtime.IO().ErrOut, "warning: %s\n", w)
+	}
 
 	apiPath := fmt.Sprintf("/open-apis/docs_ai/v1/documents/%s", ref.Token)
 	body := buildUpdateBody(runtime)
