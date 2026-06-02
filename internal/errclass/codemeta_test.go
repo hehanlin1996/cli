@@ -103,6 +103,25 @@ func TestLookupCodeMeta_Unknown(t *testing.T) {
 	}
 }
 
+// TestLookupCodeMeta_ServerErrorCode5000 pins that Lark API code 5000 is
+// registered as CategoryAPI / SubtypeServerError / Retryable:true — the
+// generic cross-service server internal error code.
+func TestLookupCodeMeta_ServerErrorCode5000(t *testing.T) {
+	meta, ok := LookupCodeMeta(5000)
+	if !ok {
+		t.Fatalf("LookupCodeMeta(5000) ok=false, want true")
+	}
+	if meta.Category != errs.CategoryAPI {
+		t.Errorf("Category = %q, want %q", meta.Category, errs.CategoryAPI)
+	}
+	if meta.Subtype != errs.SubtypeServerError {
+		t.Errorf("Subtype = %q, want %q", meta.Subtype, errs.SubtypeServerError)
+	}
+	if !meta.Retryable {
+		t.Errorf("Retryable = false, want true (server internal errors are transient)")
+	}
+}
+
 // TestLookupCodeMeta_ConfigCode_99991543 pins the Lark "app_id or app_secret
 // is incorrect" code to CategoryConfig / SubtypeInvalidClient. The CLI cannot
 // retry around a wrong app credential — the operator has to edit the local

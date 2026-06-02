@@ -114,6 +114,98 @@ func TestBuildAPIError_UnknownCategoryRoutesToInternalError(t *testing.T) {
 // CategoryConfig response (Lark code 10014 — "app secret invalid") flows
 // through BuildAPIError, the resulting *ConfigError MUST carry the canonical
 // recovery hint pointing the user at `lark-cli config init`.
+// TestBuildAPIError_ServerErrorCode5000_HasHint pins that Lark API code 5000
+// (server internal error) is registered in codeMeta as CategoryAPI /
+// SubtypeServerError / Retryable:true and that BuildAPIError produces an
+// APIError with a diagnostic hint telling the user to provide log_id to API
+// support. Without registration the code fell through to SubtypeUnknown with
+// no hint, leaving users "干着急" (helplessly waiting).
+func TestBuildAPIError_ServerErrorCode5000_HasHint(t *testing.T) {
+	meta, ok := LookupCodeMeta(5000)
+	if !ok {
+		t.Fatalf("LookupCodeMeta(5000) ok=false; code 5000 must be registered")
+	}
+	if meta.Category != errs.CategoryAPI {
+		t.Errorf("Category = %q, want %q", meta.Category, errs.CategoryAPI)
+	}
+	if meta.Subtype != errs.SubtypeServerError {
+		t.Errorf("Subtype = %q, want %q", meta.Subtype, errs.SubtypeServerError)
+	}
+	if !meta.Retryable {
+		t.Errorf("Retryable = false, want true (server internal errors are transient)")
+	}
+
+	resp := map[string]any{
+		"code":   5000,
+		"msg":    "internal error",
+		"log_id": "lg-20260602-abc",
+	}
+	err := BuildAPIError(resp, ClassifyContext{})
+	var apiErr *errs.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *errs.APIError, got %T: %v", err, err)
+	}
+	if apiErr.Subtype != errs.SubtypeServerError {
+		t.Errorf("Subtype = %q, want %q", apiErr.Subtype, errs.SubtypeServerError)
+	}
+	if apiErr.Hint == "" {
+		t.Errorf("Hint is empty; server_error code 5000 must carry a diagnostic hint")
+	}
+	if !strings.Contains(apiErr.Hint, "log_id") {
+		t.Errorf("Hint should reference log_id for API support diagnosis; got %q", apiErr.Hint)
+	}
+	if !strings.Contains(apiErr.Hint, "lg-20260602-abc") {
+		t.Errorf("Hint should embed the actual log_id; got %q", apiErr.Hint)
+	}
+}
+
+// TestBuildAPIError_ServerErrorCode5000_HintWithoutLogID pins that the
+// server_error hint is still useful when no log_id is available (e.g. upstream
+// omitted the field).
+func TestBuildAPIError_ServerErrorCode5000_HintWithoutLogID(t *testing.T) {
+	resp := map[string]any{
+		"code": 5000,
+		"msg":  "internal error",
+	}
+	err := BuildAPIError(resp, ClassifyContext{})
+	var apiErr *errs.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *errs.APIError, got %T", err)
+	}
+	if apiErr.Hint == "" {
+		t.Errorf("Hint must still be populated even without log_id; got empty")
+	}
+	if !strings.Contains(apiErr.Hint, "log_id") {
+		t.Errorf("Hint should still reference log_id for API support; got %q", apiErr.Hint)
+	}
+}
+
+// TestBuildAPIError_ServerErrorCode1470500_HasHint pins that the task-service
+// server_error code (1470500) also gets a diagnostic hint through the same
+// ServerErrorHint path, confirming the hint works for all SubtypeServerError
+// codes regardless of which sub-table they came from.
+func TestBuildAPIError_ServerErrorCode1470500_HasHint(t *testing.T) {
+	resp := map[string]any{
+		"code":   1470500,
+		"msg":    "server error",
+		"log_id": "lg-task-123",
+	}
+	err := BuildAPIError(resp, ClassifyContext{})
+	var apiErr *errs.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *errs.APIError, got %T", err)
+	}
+	if apiErr.Subtype != errs.SubtypeServerError {
+		t.Errorf("Subtype = %q, want %q", apiErr.Subtype, errs.SubtypeServerError)
+	}
+	if !strings.Contains(apiErr.Hint, "log_id") {
+		t.Errorf("Hint should reference log_id; got %q", apiErr.Hint)
+	}
+	if !strings.Contains(apiErr.Hint, "lg-task-123") {
+		t.Errorf("Hint should embed the actual log_id; got %q", apiErr.Hint)
+	}
+}
+
 func TestBuildAPIError_ConfigInvalidClient_HasHint(t *testing.T) {
 	const code = 10014
 	resp := map[string]any{"code": code, "msg": "app secret invalid"}

@@ -129,7 +129,9 @@ func BuildAPIError(resp map[string]any, cc ClassifyContext) error {
 			Action:  action,
 		}
 	case errs.CategoryAPI:
-		return &errs.APIError{Problem: base}
+		apiErr := &errs.APIError{Problem: base}
+		apiErr.Hint = ServerErrorHint(base)
+		return apiErr
 	default:
 		// Fail closed: an unrecognized Category routes to InternalError
 		// instead of emitting an empty Problem on the wire.
@@ -229,6 +231,24 @@ func ConfigHint(subtype errs.Subtype) string {
 		return "check the config file for syntax errors; rerun `lark-cli config init` to reset"
 	}
 	return ""
+}
+
+// ServerErrorHint returns the canonical recovery hint for an APIError whose
+// Subtype is SubtypeServerError. The hint tells the user to provide the log_id
+// to API support for server-side diagnosis — without it users receive only a
+// bare "code 5000" and no actionable next step.
+//
+// When logID is present the hint embeds it so the user can copy-paste the
+// entire line into a support ticket. When logID is absent the hint still
+// references log_id so the user knows to look for it on retry.
+func ServerErrorHint(p errs.Problem) string {
+	if p.Subtype != errs.SubtypeServerError {
+		return ""
+	}
+	if p.LogID != "" {
+		return fmt.Sprintf("server internal error; provide log_id %q to API support for diagnosis", p.LogID)
+	}
+	return "server internal error; provide the log_id to API support for diagnosis"
 }
 
 func buildPermissionError(p errs.Problem, resp map[string]any, cc ClassifyContext) *errs.PermissionError {

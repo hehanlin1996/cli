@@ -117,6 +117,7 @@ func TestBuildAPIError_ExitCodeMatrix(t *testing.T) {
 		{"99991661 token_missing", 99991661, errs.CategoryAuthentication, errs.SubtypeTokenMissing, 3, "AuthenticationError"},
 		{"21000 challenge_required", 21000, errs.CategoryPolicy, errs.Subtype("challenge_required"), 6, "SecurityPolicyError"},
 		{"unknown code 999999", 999999, errs.CategoryAPI, errs.SubtypeUnknown, 1, "APIError"},
+		{"5000 server_error", 5000, errs.CategoryAPI, errs.SubtypeServerError, 1, "APIError"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

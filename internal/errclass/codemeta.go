@@ -53,6 +53,7 @@ var codeMeta = map[int]CodeMeta{
 	99991662: {Category: errs.CategoryAuthorization, Subtype: errs.SubtypeAppDisabled},      // app currently disabled in tenant
 
 	// CategoryAPI
+	5000:     {Category: errs.CategoryAPI, Subtype: errs.SubtypeServerError, Retryable: true}, // server internal error (generic across services)
 	99991400: {Category: errs.CategoryAPI, Subtype: errs.SubtypeRateLimit, Retryable: true},
 	1061045:  {Category: errs.CategoryAPI, Subtype: errs.SubtypeConflict, Retryable: true},
 	131009:   {Category: errs.CategoryAPI, Subtype: errs.SubtypeConflict, Retryable: true}, // wiki write-path lock contention; retryable with backoff
