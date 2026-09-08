@@ -21,8 +21,14 @@ func v2CreateFlags() []common.Flag {
 }
 
 func validateCreateV2(_ context.Context, runtime *common.RuntimeContext) error {
-	if runtime.Str("content") == "" {
+	if runtime.Str("content") != "" && runtime.Str("markdown") != "" {
+		return common.FlagErrorf("--content and --markdown are mutually exclusive")
+	}
+	if runtime.Str("content") == "" && runtime.Str("markdown") == "" {
 		return common.FlagErrorf("--content is required")
+	}
+	if runtime.Str("markdown") != "" && runtime.Changed("doc-format") && runtime.Str("doc-format") != "markdown" {
+		return common.FlagErrorf("--markdown requires --doc-format markdown")
 	}
 	if runtime.Str("parent-token") != "" && runtime.Str("parent-position") != "" {
 		return common.FlagErrorf("--parent-token and --parent-position are mutually exclusive")
@@ -57,9 +63,15 @@ func executeCreateV2(_ context.Context, runtime *common.RuntimeContext) error {
 }
 
 func buildCreateBody(runtime *common.RuntimeContext) map[string]interface{} {
+	format := runtime.Str("doc-format")
+	content := runtime.Str("content")
+	if md := runtime.Str("markdown"); md != "" {
+		format = "markdown"
+		content = md
+	}
 	body := map[string]interface{}{
-		"format":  runtime.Str("doc-format"),
-		"content": runtime.Str("content"),
+		"format":  format,
+		"content": content,
 	}
 	if v := runtime.Str("parent-token"); v != "" {
 		body["parent_token"] = v

@@ -6,9 +6,11 @@ package sheets
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
+	"github.com/larksuite/cli/internal/cmdutil"
 	"github.com/larksuite/cli/shortcuts/common"
 	"github.com/spf13/cobra"
 )
@@ -123,6 +125,68 @@ func TestSheetAppendDryRunNormalizesEscapedSeparator(t *testing.T) {
 	got := mustMarshalSheetsDryRun(t, SheetAppend.DryRun(context.Background(), runtime))
 	if !strings.Contains(got, `"range":"sheet_123!A1:B2"`) {
 		t.Fatalf("SheetAppend.DryRun() = %s, want normalized escaped separator", got)
+	}
+}
+
+func TestSheetWriteAndAppendDryRunResolveValuesFromFile(t *testing.T) {
+	tests := []struct {
+		name     string
+		shortcut common.Shortcut
+		args     []string
+		wantURL  string
+	}{
+		{
+			name:     "write",
+			shortcut: SheetWrite,
+			args: []string{
+				"+write",
+				"--spreadsheet-token", "sht_test",
+				"--sheet-id", "sheet_123",
+				"--range", "A1:B1",
+				"--values", "@values.json",
+				"--dry-run",
+				"--as", "bot",
+			},
+			wantURL: "/open-apis/sheets/v2/spreadsheets/sht_test/values",
+		},
+		{
+			name:     "append",
+			shortcut: SheetAppend,
+			args: []string{
+				"+append",
+				"--spreadsheet-token", "sht_test",
+				"--sheet-id", "sheet_123",
+				"--range", "A1:B1",
+				"--values", "@values.json",
+				"--dry-run",
+				"--as", "bot",
+			},
+			wantURL: "/open-apis/sheets/v2/spreadsheets/sht_test/values_append",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cmdutil.TestChdir(t, dir)
+			if err := os.WriteFile("values.json", []byte(`[[1,"中文"]]`), 0o644); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
+
+			f, stdout, _, _ := cmdutil.TestFactory(t, sheetsTestConfig())
+			err := mountAndRunSheets(t, tt.shortcut, tt.args, f, stdout)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			out := stdout.String()
+			if !strings.Contains(out, tt.wantURL) {
+				t.Fatalf("dry-run output missing %q:\n%s", tt.wantURL, out)
+			}
+			if !strings.Contains(out, `"中文"`) {
+				t.Fatalf("dry-run output did not use JSON from @file:\n%s", out)
+			}
+		})
 	}
 }
 
