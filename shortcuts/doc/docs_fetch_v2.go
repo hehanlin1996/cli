@@ -79,8 +79,12 @@ func executeFetchV2(_ context.Context, runtime *common.RuntimeContext) error {
 }
 
 func buildFetchBody(runtime *common.RuntimeContext) map[string]interface{} {
+	format := runtime.Str("doc-format")
+	if format == "text" {
+		format = "raw_content"
+	}
 	body := map[string]interface{}{
-		"format": runtime.Str("doc-format"),
+		"format": format,
 	}
 	if v := runtime.Int("revision-id"); v > 0 {
 		body["revision_id"] = v

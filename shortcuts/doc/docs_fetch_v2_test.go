@@ -58,6 +58,20 @@ func TestBuildFetchBodyOmitsEmptyScene(t *testing.T) {
 	}
 }
 
+func TestBuildFetchBodyMapsTextFormatToRawContent(t *testing.T) {
+	t.Parallel()
+
+	runtime := newFetchBodyTestRuntime(context.Background())
+	if err := runtime.Cmd.Flags().Set("doc-format", "text"); err != nil {
+		t.Fatalf("set doc-format: %v", err)
+	}
+
+	body := buildFetchBody(runtime)
+	if got := body["format"]; got != "raw_content" {
+		t.Fatalf("format = %#v, want %q", got, "raw_content")
+	}
+}
+
 func newFetchBodyTestRuntime(ctx context.Context) *common.RuntimeContext {
 	cmd := &cobra.Command{Use: "+fetch"}
 	cmd.Flags().String("doc-format", "xml", "")
