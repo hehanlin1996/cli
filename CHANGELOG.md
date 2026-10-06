@@ -2,6 +2,332 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v1.0.56] - 2026-06-18
+
+### Features
+
+- **apps**: Add `+session-messages-list` for session turn reply messages (#1402)
+
+### Bug Fixes
+
+- **api**: Align API success envelopes (#1489)
+- **base**: Reject out-of-range pagination flags (#1495)
+
+### Refactor
+
+- Retire legacy error envelopes and enforce typed contract (#1449)
+
+### Documentation
+
+- **skills**: Soften lark-doc style guidance (#1463)
+
+### Build
+
+- Add CI quality gate with semantic review
+
+## [v1.0.55] - 2026-06-16
+
+### Features
+
+- **vc**: Support agent meeting event workflows (#1483)
+- **drive**: Support exporting Base structure snapshots (#1481)
+- **doc**: Add docx cover resource commands (#1468)
+- **doc**: Support `lang` for docx fetch v2 (#1459)
+- **event**: Optimize subscription precheck, links, and consumer guard (#1447)
+
+### Bug Fixes
+
+- **drive**: Validate drive import folder target (#1485)
+
+## [v1.0.54] - 2026-06-15
+
+### Features
+
+- **mail**: Auto-attach default signature on send/reply/forward (#1415)
+- **drive**: Support `original_creator_ids` filter in search (#1046)
+- **cli**: Simplify proxy plugin warning and gate it on TTY (#1448)
+
+### Bug Fixes
+
+- **doc**: Fix docs fetch and update ergonomics (#1466)
+- **vfs**: Reject blank local paths (#1460)
+- **vfs**: Reject Windows absolute paths cross-platform (#1401)
+- **event**: Clarify remote bus blocker recovery (#1454)
+
+### Refactor
+
+- Converge command pipelines onto a typed metadata model + catalog (#1191)
+
+### Documentation
+
+- **im**: Document `@mention` format per message type (text/post/card) (#1419)
+- **doc**: Clarify lark-doc create title guidance (#1474)
+- **skills**: Add rename prompt for import without `--name` (#1461)
+- **apps**: Drop Miaoda brand word from apps command help text (#1399)
+
+## [v1.0.53] - 2026-06-12
+
+### Features
+
+- **auth**: Revoke user tokens server-side on `auth logout` (#1434)
+- **auth**: Add `--json` flag support to auth subcommands (#1431)
+- **token**: Mint TAT via unified OAuth v3 Token Endpoint (#1408)
+- **note**: Split note into a dedicated domain with `+detail` and `+transcript` flows (#1345, #1417, #1435)
+- **im**: Unify sort flags into `--sort` field and `--order` direction (#1302)
+
+### Bug Fixes
+
+- **apps**: Read release error_logs from `data.error_logs` in `+release-get` (#1436)
+
+### Documentation
+
+- **skills**: Optimize whiteboard skill (#1371)
+- **skills**: Optimize okr skill (#1368)
+
+## [v1.0.52] - 2026-06-11
+
+### Features
+
+- **events**: Per-resource subscription identity + Match hook (#1185)
+- **apps**: Emit typed error envelopes across the apps domain (#1288)
+- **wiki**: Emit typed error envelopes across the wiki domain (#1350)
+- **im**: Add `--chat-modes` filter to chat search (#1317)
+- **apps**: Exclude `.git` directory from `+html-publish` package (#1396)
+- **build**: Support riscv64 prebuilt binaries in release and install pipeline
+
+### Bug Fixes
+
+- **apps**: Support git credential dry-run (#1390)
+- **whiteboard**: Fix parsing empty whiteboard content (#1391)
+- **build**: Make `-race` flag arch-conditional to support riscv64
+
+### Documentation
+
+- **im**: Document `chat.user_setting` batch_query/batch_update (#1339)
+- **im**: Document `chat.managers` and `chat.moderation` API resources (#1294)
+- **skills**: Optimize lark-drive skill routing (#1284)
+- **skills**: Expand cite user guidance and fix typos (#1394)
+
+## [v1.0.51] - 2026-06-10
+
+### Features
+
+- **apps**: Support multi dev modes (#1175)
+- **im**: Complete audio/post rendering and add opt-in `--download-resources` (#1245)
+- **base**: Configure initial base table schema (#1377)
+- **vc**: Add recording event support (#1369)
+- **minutes**: Replace words for transcript (#1372)
+- **markdown**: Emit typed error envelopes across the markdown domain (#1347)
+- **sheets**: Emit typed error envelopes across the sheets domain (#1348)
+- **slides**: Emit typed error envelopes across the slides domain (#1349)
+
+### Documentation
+
+- **skills**: Warn about `@file` absolute path restriction in lark-doc skills (#1375)
+- **skills**: Remove unsupported ⚠️ from callout emoji list (#1374)
+
+## [v1.0.50] - 2026-06-09
+
+### Features
+
+- **doc**: Emit typed error envelopes across the doc domain (#1346)
+- **event**: Emit typed error envelopes across the event domain (#1289)
+- **contact**: Emit typed error envelopes across the contact domain (#1287)
+- **sheets**: Guard `+csv-put --csv` against a path passed without `@` (#1337)
+- **cli**: Adjust agent timeout hint output conditions (#1328)
+
+### Bug Fixes
+
+- **drive**: Add `@file`/stdin support to `+add-comment --content` (#1343)
+- **slides**: Build create URL locally instead of drive metas call (#1329)
+- **cli**: Clarify `--block-id` supports comma-separated batch delete in help text (#1336)
+
+### Documentation
+
+- **doc**: Replace append with `block_insert_after` in skeleton workflow guidance (#1340)
+- **doc**: Document `<folder-manager>` resource block (#1168)
+- **drive**: Add drive comment location guidance (#1258)
+
+## [v1.0.49] - 2026-06-08
+
+### Features
+
+- **events**: Add whiteboard event domain with per-board subscription (#1265)
+- **im**: Support feed group (#1102)
+- **im**: Add feed shortcut create, list, and remove shortcuts (#1273)
+- **im**: Format feed group error handling (#1308)
+- **im**: Return typed error envelopes across the im domain (#1230)
+- **base**: Emit typed error envelopes across the base domain (#1248)
+- **calendar**: Emit typed error envelopes across the calendar domain (#1232)
+- **task**: Emit typed error envelopes across the task domain (#1231)
+- **okr,whiteboard**: Emit typed error envelopes across both domains (#1236)
+- **minutes,vc**: Emit typed error envelopes across both domains (#1234)
+- **markdown**: Harden create upload failures (#1325)
+- **drive**: Harden inspect shortcut failures (#1324)
+- **slides**: Add IconPark lookup for Lark slides (#1123)
+- **doc**: Remove docs v1 API (#1291)
+- **cli**: Add `skills` command to read embedded skill content (#1318)
+- **cli**: Fetch official skills index (#1301)
+- **shared**: Document relative-path-only file arguments (#1319)
+- **scopes**: Clear `recommend.allow` scope auto-approve overrides (#1272)
+- **shortcuts**: Check shortcut example commands against the live CLI tree (#1244)
+
+### Bug Fixes
+
+- **events**: Keep bounded event consume runs alive after stdin EOF (#1285)
+- **drive**: Use docs secure label read scope (#1281)
+
+### Documentation
+
+- **approval**: Restructure skill with intent table and scope boundaries (#1307)
+- **skills**: Tighten drive and markdown guardrails (#1326)
+- **skills**: Optimize calendar, vc, and minutes skill guidance (#1269)
+- **markdown**: Add markdown domain template (#1293)
+- **markdown**: Improve lark-markdown skill guidance (#1279)
+- **doc**: Improve lark-doc skill guidance (#1283)
+- **wiki**: Optimize skill guidance and routing boundaries (#1275)
+- **slides**: Tighten routing/boundary and reconcile in-slide whiteboard (#1169)
+
+## [v1.0.48] - 2026-06-04
+
+### Features
+
+- **mail**: Preserve mailbox context in `+triage` output for public mailboxes (#1238)
+- **contact**: Add contact skill domain guidance (#1144)
+
+### Bug Fixes
+
+- **skills**: Use JSON skills list during update (#1251)
+
+### Documentation
+
+- **drive**: Refine lark-drive knowledge organize workflow (#1253)
+- **vc-agent**: Require explicit leave request (#1260)
+- **slides**: Add whiteboard element documentation and improve slide guidance (#1029)
+
+## [v1.0.47] - 2026-06-03
+
+### Features
+
+- **sheets**: Add spec-driven shortcut package with backward-compatible wrapper (#1220)
+- **base**: Add base block shortcuts (#1044)
+- **im**: Complete card message format (#1198)
+- **im**: Improve markdown guidance for messages (#1237)
+- **vc**: Forward invite call-id on meeting join (#1243)
+- **drive**: Emit typed error envelopes across the drive domain (#1205)
+- **common**: Emit typed validation errors from shared shortcut pre-checks (#1242)
+- **mail**: Validate `message_ids` in `+messages` before batch get (#1202)
+- **wiki**: Support `appid` member type (#1235)
+- **cli**: Add `--json` flag as no-op alias for `--format json` (#1104)
+- **config**: Validate credentials after `config init` (#1151)
+
+### Bug Fixes
+
+- **skills**: Recover empty fallback for skills to update (#1233)
+
+## [v1.0.46] - 2026-06-02
+
+### Features
+
+- **im**: Add card message format support (#1218)
+- **im**: Resolve markdown blank-line formatting inconsistency in post messages (#1216)
+- **vc**: Inline transcript from artifacts API and add keywords (#1206)
+- **transport**: Add proxy plugin mode for CLI HTTP transport (#1181)
+- **agent**: Increase agent trace max length to 1024 (#1211)
+- **shortcuts**: Unconditionally inject `--format` flag for all shortcuts (#1156)
+
+### Bug Fixes
+
+- **cli**: Remove FLAGS section from root `--help` (#1226)
+- **cli**: Stop root `--help` listing per-command flags as global (#1223)
+
+### Refactor
+
+- **transport**: Own all HTTP transport in `internal/transport`, fix util layering inversion (#1213)
+
+### Documentation
+
+- **base**: Optimize base skill references (#1171)
+- **drive**: Add Lark Drive knowledge organization workflow (#1028)
+
+## [v1.0.45] - 2026-06-01
+
+### Features
+
+- **errors**: Add typed envelope contract for auth-domain errors (#1135)
+- **platform**: Support multiple policy rules per plugin (#1182)
+
+### Bug Fixes
+
+- **vc**: Add domain boundaries and enrich `+notes` (#1172)
+- **whiteboard**: Fix whiteboard skill (#1180)
+
+### Refactor
+
+- **auth**: Update login hint and split-flow docs (#1201)
+
+## [v1.0.44] - 2026-05-29
+
+### Features
+
+- **base**: Add dashboard block data shortcut and workflow docs (#1067)
+- **im**: Support `--types` flag for listing p2p single chats in `chat-list` (#1077)
+- **agent**: Add agent header support (#1158)
+
+### Bug Fixes
+
+- **im**: Correct 64-bit MP4 box size handling to prevent panic on crafted media (#1165)
+- **install**: Detect curl version before using `--ssl-revoke-best-effort` (#1124)
+- **vc**: Correct `--minute-token` to `--minute-tokens` in recording reference (#1170)
+- **whiteboard**: Fix whiteboard skill (#1166)
+
+## [v1.0.43] - 2026-05-28
+
+### Features
+
+- **event**: Support `note` generated event (#1159)
+- **config**: Decouple `--lang` preference from TUI display language (#1132)
+- **mail**: Add HTML lint library with Larksuite-native autofix for `lark-mail` (#1019)
+
+### Bug Fixes
+
+- **config**: Propagate `Lang` across credential boundary; respect `CurrentApp` in priorLang (#1157)
+- **config**: Allow lark-channel bind source override (#1154)
+- **im**: Clarify `messages-send` dry-run chat membership (#1150)
+- **base**: Include `log_id` in attachment media errors (#1133)
+
+### Performance
+
+- **im**: Parallelize reactions, thread_replies, and merge_forward fetches (#1146)
+
+### Documentation
+
+- **im**: Update IM skill urgent APIs (#1153)
+
+## [v1.0.42] - 2026-05-27
+
+### Features
+
+- **mail**: Add `+draft-send` shortcut for batch draft sending (#1017)
+- **im**: Enrich messages with reactions and output `update_time` (#1095)
+- **schema**: Output JSON spec envelope for all API commands (#1048)
+- **event**: Support `vc` / `note` / `minute` events (#1113)
+- **drive**: Add secure label shortcuts (#985)
+- **affordance**: Use description and command in affordance example schema (#1126)
+
+### Bug Fixes
+
+- **docs**: Remove unsupported `fetch` text format (#1109)
+
+### Refactor
+
+- **auth**: Drop duplicate top-level user fields in `status` (#1128)
+
+### Documentation
+
+- **doc**: Document block anchor URLs in `lark-doc` skill (#1120)
+- **whiteboard**: Improve SVG/Mermaid instructions (#1097)
+
 ## [v1.0.41] - 2026-05-26
 
 ### Features
@@ -886,6 +1212,21 @@ Bundled AI agent skills for intelligent assistance:
 - Bilingual documentation (English & Chinese).
 - CI/CD pipelines: linting, testing, coverage reporting, and automated releases.
 
+[v1.0.56]: https://github.com/larksuite/cli/releases/tag/v1.0.56
+[v1.0.55]: https://github.com/larksuite/cli/releases/tag/v1.0.55
+[v1.0.54]: https://github.com/larksuite/cli/releases/tag/v1.0.54
+[v1.0.53]: https://github.com/larksuite/cli/releases/tag/v1.0.53
+[v1.0.52]: https://github.com/larksuite/cli/releases/tag/v1.0.52
+[v1.0.51]: https://github.com/larksuite/cli/releases/tag/v1.0.51
+[v1.0.50]: https://github.com/larksuite/cli/releases/tag/v1.0.50
+[v1.0.49]: https://github.com/larksuite/cli/releases/tag/v1.0.49
+[v1.0.48]: https://github.com/larksuite/cli/releases/tag/v1.0.48
+[v1.0.47]: https://github.com/larksuite/cli/releases/tag/v1.0.47
+[v1.0.46]: https://github.com/larksuite/cli/releases/tag/v1.0.46
+[v1.0.45]: https://github.com/larksuite/cli/releases/tag/v1.0.45
+[v1.0.44]: https://github.com/larksuite/cli/releases/tag/v1.0.44
+[v1.0.43]: https://github.com/larksuite/cli/releases/tag/v1.0.43
+[v1.0.42]: https://github.com/larksuite/cli/releases/tag/v1.0.42
 [v1.0.41]: https://github.com/larksuite/cli/releases/tag/v1.0.41
 [v1.0.40]: https://github.com/larksuite/cli/releases/tag/v1.0.40
 [v1.0.39]: https://github.com/larksuite/cli/releases/tag/v1.0.39

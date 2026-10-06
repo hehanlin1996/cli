@@ -9,6 +9,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/larksuite/cli/errs"
 	"github.com/larksuite/cli/shortcuts/common"
 )
 
@@ -19,14 +20,14 @@ var VCMeetingLeave = common.Shortcut{
 	Description: "Leave a meeting by meeting ID",
 	Risk:        "write",
 	Scopes:      []string{"vc:meeting.bot.join:write"},
-	AuthTypes:   []string{"user"},
+	AuthTypes:   []string{"user", "bot"},
 	HasFormat:   true,
 	Flags: []common.Flag{
 		{Name: "meeting-id", Required: true, Desc: "meeting ID to leave"},
 	},
 	Validate: func(ctx context.Context, runtime *common.RuntimeContext) error {
 		if strings.TrimSpace(runtime.Str("meeting-id")) == "" {
-			return common.FlagErrorf("--meeting-id is required")
+			return errs.NewValidationError(errs.SubtypeInvalidArgument, "--meeting-id is required").WithParam("--meeting-id")
 		}
 		return nil
 	},
@@ -42,7 +43,7 @@ var VCMeetingLeave = common.Shortcut{
 		body := map[string]interface{}{
 			"meeting_id": meetingID,
 		}
-		data, err := runtime.DoAPIJSON("POST", "/open-apis/vc/v1/bots/leave", nil, body)
+		data, err := runtime.CallAPITyped("POST", "/open-apis/vc/v1/bots/leave", nil, body)
 		if err != nil {
 			return err
 		}

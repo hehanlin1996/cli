@@ -8,8 +8,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/larksuite/cli/errs"
 	eventlib "github.com/larksuite/cli/internal/event"
-	"github.com/larksuite/cli/internal/output"
+	"github.com/larksuite/cli/internal/suggest"
 )
 
 const maxSuggestions = 3
@@ -28,7 +29,7 @@ func suggestEventKeys(input string) []string {
 			hits = append(hits, match{def.Key, 0})
 			continue
 		}
-		if d := levenshtein(input, def.Key); d <= threshold {
+		if d := suggest.Levenshtein(input, def.Key); d <= threshold {
 			hits = append(hits, match{def.Key, d})
 		}
 	}
@@ -63,40 +64,6 @@ func unknownEventKeyErr(key string) error {
 	if guesses := suggestEventKeys(key); len(guesses) > 0 {
 		msg += " — did you mean " + formatSuggestions(guesses) + "?"
 	}
-	return output.ErrWithHint(
-		output.ExitValidation, "validation",
-		msg,
-		"Run 'lark-cli event list' to see available keys.",
-	)
-}
-
-// levenshtein computes classic edit distance (two-row DP).
-func levenshtein(a, b string) int {
-	if a == b {
-		return 0
-	}
-	ra, rb := []rune(a), []rune(b)
-	if len(ra) == 0 {
-		return len(rb)
-	}
-	if len(rb) == 0 {
-		return len(ra)
-	}
-	prev := make([]int, len(rb)+1)
-	curr := make([]int, len(rb)+1)
-	for j := range prev {
-		prev[j] = j
-	}
-	for i := 1; i <= len(ra); i++ {
-		curr[0] = i
-		for j := 1; j <= len(rb); j++ {
-			cost := 1
-			if ra[i-1] == rb[j-1] {
-				cost = 0
-			}
-			curr[j] = min(prev[j]+1, curr[j-1]+1, prev[j-1]+cost)
-		}
-		prev, curr = curr, prev
-	}
-	return prev[len(rb)]
+	return errs.NewValidationError(errs.SubtypeInvalidArgument, "%s", msg).
+		WithHint("Run 'lark-cli event list' to see available keys.")
 }

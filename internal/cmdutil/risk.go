@@ -3,15 +3,27 @@
 
 package cmdutil
 
-import "github.com/spf13/cobra"
+import (
+	"github.com/larksuite/cli/internal/core"
+	"github.com/spf13/cobra"
+)
 
 const riskLevelAnnotationKey = "risk_level"
 
+// Risk level constants — aliases of the canonical core.Risk* values, re-exported
+// here so command code gets the risk vocabulary and the SetRisk/GetRisk helpers
+// from one package. core is the single source of truth.
+const (
+	RiskRead          = core.RiskRead
+	RiskWrite         = core.RiskWrite
+	RiskHighRiskWrite = core.RiskHighRiskWrite
+)
+
 // SetRisk stores a command's static risk level on cobra annotations so the
 // help renderer (cmd/root.go) can surface a Risk: line without importing
-// shortcuts/common. Levels follow the three-tier convention: "read" | "write"
-// | "high-risk-write". Framework-level confirmation gating only acts on
-// "high-risk-write".
+// shortcuts/common. Levels follow the three-tier convention: RiskRead |
+// RiskWrite | RiskHighRiskWrite. Framework-level confirmation gating only
+// acts on RiskHighRiskWrite.
 func SetRisk(cmd *cobra.Command, level string) {
 	if level == "" {
 		return

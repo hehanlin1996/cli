@@ -11,10 +11,10 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/larksuite/cli/errs"
+	"github.com/larksuite/cli/internal/apicatalog"
 	internalauth "github.com/larksuite/cli/internal/auth"
 	"github.com/larksuite/cli/internal/cmdutil"
 	"github.com/larksuite/cli/internal/core"
-	"github.com/larksuite/cli/internal/output"
 	"github.com/larksuite/cli/internal/registry"
 	"github.com/larksuite/cli/shortcuts"
 	shortcutcommon "github.com/larksuite/cli/shortcuts/common"
@@ -23,12 +23,8 @@ import (
 // applyNeedAuthorizationHint augments a typed *errs.AuthenticationError with a
 // "current command requires scope(s): X, Y" hint when the underlying error is
 // a need_user_authorization signal AND the current command declares scopes
-// locally (via shortcut registration or service-method metadata).
-//
-// Stage-1: this typed path is dormant — no production code returns a typed
-// *errs.AuthenticationError. Kept so per-domain stage-2 migrations can plug
-// in without re-architecting. The active stage-1 path is
-// enrichMissingScopeError below, which operates on legacy *output.ExitError.
+// locally (via shortcut registration or service-method metadata). Existing
+// Hint text is preserved; scopes are appended on a new line.
 func applyNeedAuthorizationHint(f *cmdutil.Factory, err error) {
 	if err == nil || f == nil {
 		return
@@ -50,34 +46,6 @@ func applyNeedAuthorizationHint(f *cmdutil.Factory, err error) {
 		return
 	}
 	authErr.Hint += "\n" + scopeHint
-}
-
-// enrichMissingScopeError appends a "current command requires scope(s): X"
-// hint to a legacy *output.ExitError when the underlying error carries the
-// need_user_authorization marker AND the current command declares scopes
-// locally. Matches pre-PR behaviour byte-for-byte; lives on the legacy
-// envelope path until per-domain stage-2 typed migration.
-//
-// Deprecated: stage-1 enrichment for the legacy *output.ExitError surface.
-// Stage-2 typed migration will lift this into AuthenticationError.Hint on
-// the typed envelope via applyNeedAuthorizationHint and remove this helper.
-func enrichMissingScopeError(f *cmdutil.Factory, exitErr *output.ExitError) {
-	if exitErr == nil || exitErr.Detail == nil {
-		return
-	}
-	if !internalauth.IsNeedUserAuthorizationError(exitErr) {
-		return
-	}
-	scopes := resolveDeclaredScopesForCurrentCommand(f)
-	if len(scopes) == 0 {
-		return
-	}
-	scopeHint := fmt.Sprintf("current command requires scope(s): %s", strings.Join(scopes, ", "))
-	if exitErr.Detail.Hint == "" {
-		exitErr.Detail.Hint = scopeHint
-		return
-	}
-	exitErr.Detail.Hint += "\n" + scopeHint
 }
 
 // resolveDeclaredScopesForCurrentCommand returns the scopes declared by the
@@ -124,78 +92,37 @@ func resolveDeclaredShortcutScopes(cmd *cobra.Command, identity string) []string
 }
 
 // resolveDeclaredServiceMethodScopes returns the scopes declared by a
-// service/resource/method command from the embedded from_meta registry.
+// service/resource/method command. It reconstructs the catalog path from the
+// command ancestry and resolves it through the same navigation Module the
+// command tree is built from (apicatalog), so it stays correct for nested
+// resources instead of hard-coding a root->service->resource->method depth.
+// Non-method commands (services, resources, shortcuts) resolve to a non-method
+// target and yield no scopes.
 func resolveDeclaredServiceMethodScopes(cmd *cobra.Command, identity string) []string {
-	// Service-method scope lookup only applies to commands mounted as
-	// root -> service -> resource -> method. Non-resource/method commands
-	// intentionally return no scopes here so auth-hint enrichment does not
-	// change runtime semantics for other command shapes.
-	if cmd == nil || cmd.Parent() == nil || cmd.Parent().Parent() == nil || cmd.Parent().Parent().Parent() == nil {
+	if cmd == nil || strings.HasPrefix(cmd.Name(), "+") {
 		return nil
 	}
-	if strings.HasPrefix(cmd.Name(), "+") {
+	path := commandCatalogPath(cmd)
+	if len(path) == 0 {
 		return nil
 	}
-
-	service := cmd.Parent().Parent().Name()
-	resource := cmd.Parent().Name()
-	method := cmd.Name()
-
-	spec := registry.LoadFromMeta(service)
-	if spec == nil {
+	target, err := registry.RuntimeCatalog().Resolve(path)
+	if err != nil || target.Kind != apicatalog.TargetMethod {
 		return nil
 	}
-	resources, _ := spec["resources"].(map[string]interface{})
-	resMap, _ := resources[resource].(map[string]interface{})
-	if resMap == nil {
-		return nil
-	}
-	methods, _ := resMap["methods"].(map[string]interface{})
-	methodMap, _ := methods[method].(map[string]interface{})
-	if methodMap == nil {
-		return nil
-	}
-	return declaredScopesForMethod(methodMap, identity)
+	return registry.DeclaredScopesForMethod(target.Method.Method, identity)
 }
 
-// declaredScopesForMethod returns all requiredScopes when present; otherwise it
-// resolves the single recommended scope from the method's scopes list.
-func declaredScopesForMethod(method map[string]interface{}, identity string) []string {
-	if requiredRaw, ok := method["requiredScopes"].([]interface{}); ok && len(requiredRaw) > 0 {
-		return interfaceStrings(requiredRaw)
+// commandCatalogPath reconstructs the catalog path [service, resource..., method]
+// from a command's ancestry, excluding the root command. It is the inverse of
+// the service command tree's construction, so any depth (flat or nested)
+// round-trips through apicatalog.Resolve.
+func commandCatalogPath(cmd *cobra.Command) []string {
+	var path []string
+	for c := cmd; c != nil && c.Parent() != nil; c = c.Parent() {
+		path = append([]string{c.Name()}, path...)
 	}
-
-	rawScopes, _ := method["scopes"].([]interface{})
-	if len(rawScopes) == 0 {
-		return nil
-	}
-	recommended := registry.SelectRecommendedScope(rawScopes, identity)
-	if recommended == "" {
-		for _, raw := range rawScopes {
-			if scope, ok := raw.(string); ok && scope != "" {
-				recommended = scope
-				break
-			}
-		}
-	}
-	if recommended == "" {
-		return nil
-	}
-	return []string{recommended}
-}
-
-// interfaceStrings converts a []interface{} containing strings into a compact
-// []string, skipping empty or non-string values.
-func interfaceStrings(values []interface{}) []string {
-	scopes := make([]string, 0, len(values))
-	for _, value := range values {
-		scope, ok := value.(string)
-		if !ok || scope == "" {
-			continue
-		}
-		scopes = append(scopes, scope)
-	}
-	return scopes
+	return path
 }
 
 // shortcutSupportsIdentity reports whether a shortcut supports the requested

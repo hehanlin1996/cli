@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/larksuite/cli/errs"
 	"github.com/larksuite/cli/extension/fileio"
-	"github.com/larksuite/cli/internal/output"
 	"github.com/larksuite/cli/shortcuts/common"
 )
 
@@ -25,7 +25,8 @@ var DriveImport = common.Shortcut{
 		"docs:document.media:upload",
 		"docs:document:import",
 	},
-	AuthTypes: []string{"user", "bot"},
+	ConditionalScopes: []string{"wiki:node:retrieve"},
+	AuthTypes:         []string{"user", "bot"},
 	Flags: []common.Flag{
 		{Name: "file", Desc: "local file path (e.g. .docx, .xlsx, .md, .base, .pptx; large files auto use multipart upload; .base is capped at 20MB, .pptx at 500MB)", Required: true},
 		{Name: "type", Desc: "target document type (docx, sheet, bitable, slides)", Required: true},
@@ -61,6 +62,7 @@ var DriveImport = common.Shortcut{
 		dry := common.NewDryRunAPI()
 		dry.Desc("Upload file (single-part or multipart) -> create import task -> poll status")
 
+		appendDriveImportFolderTokenWikiCheckDryRun(dry, spec)
 		appendDriveImportUploadDryRun(dry, spec, fileSize)
 
 		dry.POST("/open-apis/drive/v1/import_tasks").
@@ -85,6 +87,9 @@ var DriveImport = common.Shortcut{
 			TargetToken: runtime.Str("target-token"),
 		}
 		if _, err := preflightDriveImportFile(runtime.FileIO(), &spec); err != nil {
+			return err
+		}
+		if err := rejectDriveImportWikiFolderToken(runtime, spec.FolderToken); err != nil {
 			return err
 		}
 
@@ -161,10 +166,10 @@ func preflightDriveImportFile(fio fileio.FileIO, spec *driveImportSpec) (int64, 
 	// and format-specific size limits before planning the upload path.
 	info, err := fio.Stat(spec.FilePath)
 	if err != nil {
-		return 0, common.WrapInputStatError(err)
+		return 0, driveInputStatError(err)
 	}
 	if !info.Mode().IsRegular() {
-		return 0, output.ErrValidation("file must be a regular file: %s", spec.FilePath)
+		return 0, errs.NewValidationError(errs.SubtypeInvalidArgument, "file must be a regular file: %s", spec.FilePath).WithParam("--file")
 	}
 	if err = validateDriveImportFileSize(spec.FilePath, spec.DocType, info.Size()); err != nil {
 		return 0, err

@@ -6,6 +6,7 @@ package cmd
 import (
 	"context"
 	"io"
+	"io/fs"
 
 	"github.com/larksuite/cli/cmd/api"
 	"github.com/larksuite/cli/cmd/auth"
@@ -16,8 +17,10 @@ import (
 	"github.com/larksuite/cli/cmd/profile"
 	"github.com/larksuite/cli/cmd/schema"
 	"github.com/larksuite/cli/cmd/service"
+	"github.com/larksuite/cli/cmd/skill"
 	cmdupdate "github.com/larksuite/cli/cmd/update"
 	_ "github.com/larksuite/cli/events"
+	"github.com/larksuite/cli/internal/apicatalog"
 	"github.com/larksuite/cli/internal/build"
 	"github.com/larksuite/cli/internal/cmdpolicy"
 	"github.com/larksuite/cli/internal/cmdutil"
@@ -31,9 +34,13 @@ import (
 type BuildOption func(*buildConfig)
 
 type buildConfig struct {
-	streams  *cmdutil.IOStreams
-	keychain keychain.KeychainAccess
-	globals  GlobalOptions
+	streams        *cmdutil.IOStreams
+	keychain       keychain.KeychainAccess
+	globals        GlobalOptions
+	skipPlugins    bool
+	skipStrictMode bool
+	skipService    bool
+	serviceCatalog *apicatalog.Catalog
 }
 
 // WithIO sets the IO streams for the CLI by wrapping raw reader/writers.
@@ -51,6 +58,18 @@ func WithKeychain(kc keychain.KeychainAccess) BuildOption {
 	}
 }
 
+// embeddedSkillContent is the skill tree wired into cmdutil.Factory.SkillContent
+// at build time. It is registered by the repo-root package main's init via
+// SetEmbeddedSkillContent — it cannot be threaded through main.go without
+// breaking the single-file preview build (see skills_embed.go). nil in builds
+// that embed no skills; the `skills` commands then return a typed internal error.
+var embeddedSkillContent fs.FS
+
+// SetEmbeddedSkillContent registers the embedded skill tree. Called from the
+// repo-root package main's init; a wrapper main can call it before Execute to
+// supply its own skill content.
+func SetEmbeddedSkillContent(fsys fs.FS) { embeddedSkillContent = fsys }
+
 // HideProfile sets the visibility policy for the root-level --profile flag.
 // When hide is true the flag stays registered (so existing invocations still
 // parse) but is omitted from help and shell completion. Typically called as
@@ -58,6 +77,41 @@ func WithKeychain(kc keychain.KeychainAccess) BuildOption {
 func HideProfile(hide bool) BuildOption {
 	return func(c *buildConfig) {
 		c.globals.HideProfile = hide
+	}
+}
+
+// WithoutPlugins builds only repository-owned commands. It is intended for
+// inspection tools that need a deterministic command tree.
+func WithoutPlugins() BuildOption {
+	return func(c *buildConfig) {
+		c.skipPlugins = true
+	}
+}
+
+// WithoutStrictMode builds the complete repository-owned command tree without
+// applying user/profile strict-mode pruning. It is intended for offline
+// inspection tools, not production execution.
+func WithoutStrictMode() BuildOption {
+	return func(c *buildConfig) {
+		c.skipStrictMode = true
+	}
+}
+
+// WithoutServiceCommands builds only hand-authored commands. It is intended for
+// repository quality gates that should not depend on the remote OpenAPI
+// metadata command surface.
+func WithoutServiceCommands() BuildOption {
+	return func(c *buildConfig) {
+		c.skipService = true
+	}
+}
+
+// WithServiceCatalog builds generated service commands from a specific metadata
+// catalog. It is intended for offline inspection tools that need deterministic
+// embedded metadata while production execution keeps using the runtime catalog.
+func WithServiceCatalog(catalog apicatalog.Catalog) BuildOption {
+	return func(c *buildConfig) {
+		c.serviceCatalog = &catalog
 	}
 }
 
@@ -103,6 +157,7 @@ func buildInternal(ctx context.Context, inv cmdutil.InvocationContext, opts ...B
 	if cfg.keychain != nil {
 		f.Keychain = cfg.keychain
 	}
+	f.SkillContent = embeddedSkillContent
 	rootCmd := &cobra.Command{
 		Use:     "lark-cli",
 		Short:   "Lark/Feishu CLI — OAuth authorization, UAT management, API calls",
@@ -117,6 +172,13 @@ func buildInternal(ctx context.Context, inv cmdutil.InvocationContext, opts ...B
 
 	installTipsHelpFunc(rootCmd)
 	rootCmd.SilenceErrors = true
+	// SilenceUsage as a static field (not only in PersistentPreRun) so it also
+	// covers flag-parse errors, which fail before PreRun runs — otherwise cobra
+	// dumps usage instead of our structured error. SetFlagErrorFunc on root is
+	// inherited by every subcommand, turning unknown-flag errors into a
+	// structured "did you mean" envelope.
+	rootCmd.SilenceUsage = true
+	rootCmd.SetFlagErrorFunc(flagDidYouMean)
 
 	RegisterGlobalFlags(rootCmd.PersistentFlags(), &cfg.globals)
 	rootCmd.PersistentPreRun = func(cmd *cobra.Command, args []string) {
@@ -133,13 +195,25 @@ func buildInternal(ctx context.Context, inv cmdutil.InvocationContext, opts ...B
 	rootCmd.AddCommand(completion.NewCmdCompletion(f))
 	rootCmd.AddCommand(cmdupdate.NewCmdUpdate(f))
 	rootCmd.AddCommand(cmdevent.NewCmdEvents(f))
-	service.RegisterServiceCommandsWithContext(ctx, rootCmd, f)
+	rootCmd.AddCommand(skill.NewCmdSkill(f))
+	if !cfg.skipService {
+		if cfg.serviceCatalog != nil {
+			service.RegisterServiceCommandsFromCatalog(ctx, rootCmd, f, *cfg.serviceCatalog)
+		} else {
+			service.RegisterServiceCommandsWithContext(ctx, rootCmd, f)
+		}
+	}
 	shortcuts.RegisterShortcutsWithContext(ctx, rootCmd, f)
 
 	installUnknownSubcommandGuard(rootCmd)
 
-	if mode := f.ResolveStrictMode(ctx); mode.IsActive() {
+	if mode := f.ResolveStrictMode(ctx); mode.IsActive() && !cfg.skipStrictMode {
 		pruneForStrictMode(rootCmd, mode)
+	}
+
+	if cfg.skipPlugins {
+		recordInventory(nil)
+		return f, rootCmd, nil
 	}
 
 	installResult, installErr := installPluginsAndHooks(cfg.streams.ErrOut)

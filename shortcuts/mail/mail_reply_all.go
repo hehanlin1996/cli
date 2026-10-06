@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/larksuite/cli/internal/output"
 	"github.com/larksuite/cli/shortcuts/common"
 	draftpkg "github.com/larksuite/cli/shortcuts/mail/draft"
 	"github.com/larksuite/cli/shortcuts/mail/emlbuilder"
@@ -24,9 +23,11 @@ var MailReplyAll = common.Shortcut{
 	Risk:        "write",
 	Scopes:      []string{"mail:user_mailbox.message:modify", "mail:user_mailbox.message:readonly", "mail:user_mailbox:readonly", "mail:user_mailbox.message.address:read", "mail:user_mailbox.message.subject:read", "mail:user_mailbox.message.body:read"},
 	AuthTypes:   []string{"user"},
+	HasFormat:   true,
 	Flags: []common.Flag{
 		{Name: "message-id", Desc: "Required. Message ID to reply to all recipients", Required: true},
-		{Name: "body", Desc: "Reply body. Prefer HTML for rich formatting; plain text is also supported. Body type is auto-detected from the reply body and the original message. Use --plain-text to force plain-text mode. Required unless --template-id supplies a non-empty body."},
+		{Name: "body", Desc: "Reply body. Prefer HTML for rich formatting; plain text is also supported. Body type is auto-detected from the reply body and the original message. Use --plain-text to force plain-text mode. Mutually exclusive with --body-file. Required unless --template-id supplies a non-empty body."},
+		bodyFileFlag,
 		{Name: "from", Desc: "Sender email address for the From header. When using an alias (send_as) address, set this to the alias and use --mailbox for the owning mailbox. Defaults to the mailbox's primary address."},
 		{Name: "mailbox", Desc: "Mailbox email address that owns the draft (default: falls back to --from, then me). Use this when the sender (--from) differs from the mailbox, e.g. sending via an alias or send_as address."},
 		{Name: "to", Desc: "Additional To address(es), comma-separated (appended to original recipients)"},
@@ -42,8 +43,10 @@ var MailReplyAll = common.Shortcut{
 		{Name: "subject", Desc: "Optional. Override the auto-generated Re: subject. When set, the shortcut uses this value verbatim instead of prefixing the original subject."},
 		{Name: "template-id", Desc: "Optional. Apply a saved template by ID (decimal integer string) before composing. The template's body/to/cc/bcc/attachments are appended to the reply-derived values (no de-duplication; see warning in Execute output)."},
 		signatureFlag,
+		noSignatureFlag,
 		priorityFlag,
-		eventSummaryFlag, eventStartFlag, eventEndFlag, eventLocationFlag},
+		eventSummaryFlag, eventStartFlag, eventEndFlag, eventLocationFlag,
+		showLintDetailsFlag},
 	DryRun: func(ctx context.Context, runtime *common.RuntimeContext) *common.DryRunAPI {
 		messageId := runtime.Str("message-id")
 		confirmSend := runtime.Bool("confirm-send")
@@ -71,8 +74,17 @@ var MailReplyAll = common.Shortcut{
 			return err
 		}
 		hasTemplate := runtime.Str("template-id") != ""
-		if !hasTemplate && strings.TrimSpace(runtime.Str("body")) == "" {
-			return output.ErrValidation("--body is required; pass the reply body (or use --template-id)")
+		bodyFlag := runtime.Str("body")
+		bodyFile := strings.TrimSpace(runtime.Str("body-file"))
+		if err := validateBodyFileMutex(bodyFlag, bodyFile, runtime.ValidatePath); err != nil {
+			return err
+		}
+		body, bErr := resolveBodyFromFlags(runtime)
+		if bErr != nil {
+			return bErr
+		}
+		if err := validateRequiredResolvedBody(body, hasTemplate, "--body or --body-file is required; pass the reply body (or use --template-id)"); err != nil {
+			return err
 		}
 		if err := validateConfirmSendScope(runtime); err != nil {
 			return err
@@ -83,7 +95,7 @@ var MailReplyAll = common.Shortcut{
 		if err := validateSendTime(runtime); err != nil {
 			return err
 		}
-		if err := validateSignatureWithPlainText(runtime.Bool("plain-text"), runtime.Str("signature-id")); err != nil {
+		if err := validateNoSignatureConflict(runtime.Bool("no-signature"), runtime.Str("signature-id")); err != nil {
 			return err
 		}
 		if err := validateEventFlags(runtime); err != nil {
@@ -96,7 +108,10 @@ var MailReplyAll = common.Shortcut{
 	},
 	Execute: func(ctx context.Context, runtime *common.RuntimeContext) error {
 		messageId := runtime.Str("message-id")
-		body := runtime.Str("body")
+		body, bErr := resolveBodyFromFlags(runtime)
+		if bErr != nil {
+			return bErr
+		}
 		toFlag := runtime.Str("to")
 		ccFlag := runtime.Str("cc")
 		bccFlag := runtime.Str("bcc")
@@ -117,15 +132,10 @@ var MailReplyAll = common.Shortcut{
 			return err
 		}
 
-		signatureID := runtime.Str("signature-id")
 		mailboxID := resolveComposeMailboxID(runtime)
-		sigResult, sigErr := resolveSignature(ctx, runtime, mailboxID, signatureID, runtime.Str("from"))
-		if sigErr != nil {
-			return sigErr
-		}
 		sourceMsg, err := fetchComposeSourceMessage(runtime, mailboxID, messageId)
 		if err != nil {
-			return fmt.Errorf("failed to fetch original message: %w", err)
+			return mailDecorateProblemMessage(err, "failed to fetch original message")
 		}
 		orig := sourceMsg.Original
 		stripLargeAttachmentCard(&orig)
@@ -142,6 +152,18 @@ var MailReplyAll = common.Shortcut{
 		senderEmail := resolvedSender
 		if senderEmail == "" {
 			senderEmail = orig.headTo
+		}
+
+		// Signature ID is resolved here (after senderEmail is finalised) so DefaultReplyID
+		// matches the correct usage. The actual image download in resolveSignature is deferred
+		// to after applyTemplate so the final plainText value (which a template can override
+		// via IsPlainTextMode) is used for the downloadImages decision.
+		signatureID := runtime.Str("signature-id")
+		noSignature := runtime.Bool("no-signature")
+		if noSignature {
+			signatureID = ""
+		} else if signatureID == "" {
+			signatureID = autoResolveSignatureID(runtime, mailboxID, senderEmail, true /*isReply*/)
 		}
 
 		var removeList []string
@@ -204,6 +226,14 @@ var MailReplyAll = common.Shortcut{
 				"bccs_count":         countAddresses(bccFlag),
 			})
 		}
+		// Resolve signature after template processing so plainText reflects any IsPlainTextMode
+		// override from the template. This avoids downloading HTML signature images when the
+		// template forces plain-text mode, which could cause CDN 403/5xx or timeout errors.
+		sigResult, sigErr := resolveSignature(ctx, runtime, mailboxID, signatureID, senderEmail,
+			runtime.Str("signature-id") != "", !plainText)
+		if sigErr != nil {
+			return sigErr
+		}
 		subjectOverride := strings.TrimSpace(runtime.Str("subject"))
 
 		if err := validateRecipientCount(toList, ccList, bccFlag); err != nil {
@@ -212,7 +242,7 @@ var MailReplyAll = common.Shortcut{
 
 		useHTML := !plainText && (bodyIsHTML(body) || bodyIsHTML(orig.bodyRaw) || sigResult != nil)
 		if strings.TrimSpace(inlineFlag) != "" && !useHTML {
-			return fmt.Errorf("--inline requires HTML mode, but neither the new body nor the original message contains HTML")
+			return mailValidationParamError("--inline", "--inline requires HTML mode, but neither the new body nor the original message contains HTML")
 		}
 		var bodyStr string
 		if useHTML {
@@ -253,9 +283,11 @@ var MailReplyAll = common.Shortcut{
 		var composedHTMLBody string
 		var composedTextBody string
 		var srcInlineBytes int64
+		// Lint findings flowing into the writing-path stdout envelope.
+		lintApplied, lintBlocked := emptyLintEnvelopeFields()
 		if useHTML {
 			if err := validateInlineImageURLs(sourceMsg); err != nil {
-				return fmt.Errorf("HTML reply-all blocked: %w", err)
+				return mailDecorateProblemMessage(err, "HTML reply-all blocked")
 			}
 			var srcCIDs []string
 			bld, srcCIDs, srcInlineBytes, err = addInlineImagesToBuilder(runtime, bld, sourceMsg.InlineImages)
@@ -264,12 +296,19 @@ var MailReplyAll = common.Shortcut{
 			}
 			resolved, refs, resolveErr := draftpkg.ResolveLocalImagePaths(bodyStr)
 			if resolveErr != nil {
-				return resolveErr
+				return mailValidationError("failed to resolve local image paths: %v", resolveErr).WithCause(resolveErr)
 			}
 			bodyWithSig := resolved
 			if sigResult != nil {
 				bodyWithSig += draftpkg.SignatureSpacing() + draftpkg.BuildSignatureHTML(sigResult.ID, sigResult.RenderedContent)
 			}
+			// Writing-path lint: same pattern as +reply — operate on bodyWithSig
+			// only; the `quoted` block from the original message must NOT be
+			// re-linted (it may contain Feishu-native quote-block classes that
+			// the lint allow-list intentionally permits in pass-through).
+			cleaned, rep := runWritePathLint(bodyWithSig)
+			bodyWithSig = cleaned
+			lintApplied, lintBlocked = rep.Applied, rep.Blocked
 			composedHTMLBody = bodyWithSig + quoted
 			bld = bld.HTMLBody([]byte(composedHTMLBody))
 			bld = addSignatureImagesToBuilder(bld, sigResult)
@@ -293,7 +332,7 @@ var MailReplyAll = common.Shortcut{
 				return err
 			}
 		} else {
-			composedTextBody = bodyStr + quoted
+			composedTextBody = injectPlainTextSignature(bodyStr, sigResult) + quoted
 			bld = bld.TextBody([]byte(composedTextBody))
 		}
 		// Embed template SMALL non-inline attachments regardless of body mode.
@@ -318,23 +357,30 @@ var MailReplyAll = common.Shortcut{
 		}
 		rawEML, err := bld.BuildBase64URL()
 		if err != nil {
-			return fmt.Errorf("failed to build EML: %w", err)
+			return mailValidationError("failed to build EML: %v", err).WithCause(err)
 		}
 
 		draftResult, err := draftpkg.CreateWithRaw(runtime, mailboxID, rawEML)
 		if err != nil {
-			return fmt.Errorf("failed to create draft: %w", err)
+			return mailDecorateProblemMessage(err, "failed to create draft")
 		}
+		showLintDetails := runtime.Bool("show-lint-details")
 		if !confirmSend {
-			runtime.Out(buildDraftSavedOutput(draftResult, mailboxID), nil)
+			out := buildDraftSavedOutput(draftResult, mailboxID)
+			applyLintToEnvelope(out, lintApplied, lintBlocked, showLintDetails)
+			addComposeHint(out)
+			runtime.Out(out, nil)
 			hintSendDraft(runtime, mailboxID, draftResult.DraftID)
 			return nil
 		}
 		resData, err := draftpkg.Send(runtime, mailboxID, draftResult.DraftID, sendTime)
 		if err != nil {
-			return fmt.Errorf("failed to send reply-all (draft %s created but not sent): %w", draftResult.DraftID, err)
+			return mailDecorateProblemMessage(err, "failed to send reply-all (draft %s created but not sent)", draftResult.DraftID)
 		}
-		runtime.Out(buildDraftSendOutput(resData, mailboxID), nil)
+		out := buildDraftSendOutput(resData, mailboxID)
+		applyLintToEnvelope(out, lintApplied, lintBlocked, showLintDetails)
+		addComposeHint(out)
+		runtime.Out(out, nil)
 		hintMarkAsRead(runtime, mailboxID, messageId)
 		return nil
 	},

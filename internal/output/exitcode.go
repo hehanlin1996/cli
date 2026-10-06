@@ -47,12 +47,9 @@ func ExitCodeForCategory(cat errs.Category) int {
 }
 
 // ExitCodeOf returns the shell exit code for any error.
-//   - typed errors (*errs.PermissionError, *errs.APIError, ...) → routed by Category
-//   - legacy *output.ExitError → uses its own Code field
-//   - *core.ConfigError → reaches the dispatcher as a legacy
-//     *output.ExitError via cmd/root asExitError (stage 1); the typed
-//     promotion path through internal/errcompat.PromoteConfigError is
-//     reserved for stage 2+.
+//   - typed errors (*errs.PermissionError, *errs.APIError, *errs.ConfigError,
+//     *errs.AuthenticationError, ...) → routed by Category
+//   - *PartialFailureError / *BareError signals → their own Code field
 //   - untyped → ExitInternal
 func ExitCodeOf(err error) int {
 	if err == nil {
@@ -61,9 +58,13 @@ func ExitCodeOf(err error) int {
 	if _, ok := errs.ProblemOf(err); ok {
 		return ExitCodeForCategory(errs.CategoryOf(err))
 	}
-	var exitErr *ExitError
-	if errors.As(err, &exitErr) {
-		return exitErr.Code
+	var pfErr *PartialFailureError
+	if errors.As(err, &pfErr) {
+		return pfErr.Code
+	}
+	var bare *BareError
+	if errors.As(err, &bare) {
+		return bare.Code
 	}
 	return ExitInternal
 }

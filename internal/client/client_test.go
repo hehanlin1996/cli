@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,6 +19,8 @@ import (
 	lark "github.com/larksuite/oapi-sdk-go/v3"
 	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
 
+	"github.com/larksuite/cli/errs"
+	internalauth "github.com/larksuite/cli/internal/auth"
 	"github.com/larksuite/cli/internal/core"
 	"github.com/larksuite/cli/internal/credential"
 	"github.com/larksuite/cli/internal/output"
@@ -121,8 +124,9 @@ func TestStreamPages_NonBatchAPI_NoArrayField(t *testing.T) {
 		Method: "GET",
 		URL:    "/open-apis/contact/v3/users/u123",
 		As:     "bot",
-	}, func(items []interface{}) {
+	}, func(items []interface{}) error {
 		t.Error("onItems should not be called for non-batch API")
+		return nil
 	}, PaginationOptions{})
 
 	if err != nil {
@@ -165,8 +169,9 @@ func TestStreamPages_BatchAPI_WithArrayField(t *testing.T) {
 		Method: "GET",
 		URL:    "/open-apis/contact/v3/users",
 		As:     "bot",
-	}, func(items []interface{}) {
+	}, func(items []interface{}) error {
 		streamedItems = append(streamedItems, items...)
+		return nil
 	}, PaginationOptions{})
 
 	if err != nil {
@@ -183,6 +188,58 @@ func TestStreamPages_BatchAPI_WithArrayField(t *testing.T) {
 	}
 	if result == nil {
 		t.Fatal("expected non-nil result")
+	}
+}
+
+func TestStreamPages_OnItemsErrorStopsPagination(t *testing.T) {
+	apiCalls := 0
+	rt := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		apiCalls++
+		if apiCalls == 1 {
+			return jsonResponse(map[string]interface{}{
+				"code": 0, "msg": "ok",
+				"data": map[string]interface{}{
+					"items":      []interface{}{map[string]interface{}{"id": "1"}},
+					"has_more":   true,
+					"page_token": "next",
+				},
+			}), nil
+		}
+		return jsonResponse(map[string]interface{}{
+			"code": 0, "msg": "ok",
+			"data": map[string]interface{}{
+				"items":    []interface{}{map[string]interface{}{"id": "2"}},
+				"has_more": false,
+			},
+		}), nil
+	})
+
+	ac, _ := newTestAPIClient(t, rt)
+	sentinel := errors.New("stop streaming")
+	var streamedItems []interface{}
+	result, hasItems, err := ac.StreamPages(context.Background(), RawApiRequest{
+		Method: "GET",
+		URL:    "/open-apis/contact/v3/users",
+		As:     "bot",
+	}, func(items []interface{}) error {
+		streamedItems = append(streamedItems, items...)
+		return sentinel
+	}, PaginationOptions{PageDelay: 0})
+
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("err = %v, want sentinel", err)
+	}
+	if result != nil {
+		t.Fatalf("result = %#v, want nil when callback stops pagination", result)
+	}
+	if hasItems {
+		t.Fatal("hasItems = true, want false when callback stops before returning")
+	}
+	if apiCalls != 1 {
+		t.Fatalf("apiCalls = %d, want early stop after first page", apiCalls)
+	}
+	if len(streamedItems) != 1 {
+		t.Fatalf("streamedItems = %d, want first page only", len(streamedItems))
 	}
 }
 
@@ -428,6 +485,39 @@ func TestDoStream_IgnoresBaseHTTPClientTimeout(t *testing.T) {
 	}
 }
 
+// TestDoStream_TransportFailureSplitsSubtype pins that a streaming-request
+// transport failure routes through classifyNetworkSubtype rather than emitting
+// a hardcoded SubtypeNetworkTransport for every cause. Concretely: a DNS
+// failure must surface as SubtypeNetworkDNS so downstream agents can react
+// (retry / give up / show recovery hint) without parsing the message text.
+// Pre-fix, DoStream collapsed every httpClient.Do failure to NetworkTransport,
+// erasing the timeout / TLS / DNS distinctions the SDK path already preserved.
+func TestDoStream_TransportFailureSplitsSubtype(t *testing.T) {
+	rt := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return nil, &net.DNSError{Err: "no such host", Name: "nowhere.invalid"}
+	})
+	ac := &APIClient{
+		HTTP:       &http.Client{Transport: rt},
+		Credential: credential.NewCredentialProvider(nil, nil, &staticTokenResolver{}, nil),
+		Config:     &core.CliConfig{AppID: "test-app", AppSecret: "test-secret", Brand: core.BrandFeishu},
+	}
+
+	_, err := ac.DoStream(context.Background(), &larkcore.ApiReq{
+		HttpMethod: http.MethodGet,
+		ApiPath:    "/open-apis/drive/v1/files/file_token/download",
+	}, core.AsBot)
+	if err == nil {
+		t.Fatal("expected DNS error from DoStream transport, got nil")
+	}
+	var netErr *errs.NetworkError
+	if !errors.As(err, &netErr) {
+		t.Fatalf("expected *errs.NetworkError, got %T (%v)", err, err)
+	}
+	if netErr.Subtype != errs.SubtypeNetworkDNS {
+		t.Errorf("Subtype = %q, want %q (DNS failures must not be classified as generic transport)", netErr.Subtype, errs.SubtypeNetworkDNS)
+	}
+}
+
 // failingTokenResolver always returns TokenUnavailableError, exercising the
 // auth/credential failure path through resolveAccessToken.
 type failingTokenResolver struct{}
@@ -436,17 +526,90 @@ func (f *failingTokenResolver) ResolveToken(_ context.Context, spec credential.T
 	return nil, &credential.TokenUnavailableError{Source: "test", Type: spec.Type}
 }
 
-// TestDoSDKRequest_AuthFailurePreservesAuthCategory pins the end-to-end
-// invariant codex caught the day this PR landed: when resolveAccessToken
-// produces output.ErrAuth ("no access token available for <identity>"),
-// DoSDKRequest must surface it with the original auth classification —
-// not silently downgrade it to a network error via the SDK-failure wrap.
+// TestResolveAccessToken_NoToken_ReturnsTypedAuthenticationError pins that
+// the missing-token path of resolveAccessToken returns the typed
+// *errs.AuthenticationError{Subtype: TokenMissing}.
+func TestResolveAccessToken_NoToken_ReturnsTypedAuthenticationError(t *testing.T) {
+	ac := &APIClient{
+		HTTP:       &http.Client{},
+		Credential: credential.NewCredentialProvider(nil, nil, &failingTokenResolver{}, nil),
+		Config:     &core.CliConfig{AppID: "test-app", AppSecret: "test-secret", Brand: core.BrandFeishu},
+	}
+
+	_, err := ac.resolveAccessToken(context.Background(), core.AsUser)
+	if err == nil {
+		t.Fatal("expected error when no token available, got nil")
+	}
+
+	var authErr *errs.AuthenticationError
+	if !errors.As(err, &authErr) {
+		t.Fatalf("expected *errs.AuthenticationError, got %T (%v)", err, err)
+	}
+	if authErr.Category != errs.CategoryAuthentication {
+		t.Errorf("Category = %v, want %v", authErr.Category, errs.CategoryAuthentication)
+	}
+	if authErr.Subtype != errs.SubtypeTokenMissing {
+		t.Errorf("Subtype = %v, want %v", authErr.Subtype, errs.SubtypeTokenMissing)
+	}
+}
+
+// needAuthTokenResolver mirrors the production credential chain: the
+// missing-UAT case is constructed typed at the source (internal/auth) and
+// carries the legacy *NeedAuthorizationError sentinel in its Cause chain. It
+// must surface as a typed AuthenticationError and flow through resolveAccessToken
+// and WrapDoAPIError unchanged (never mis-classified as NetworkError).
+type needAuthTokenResolver struct {
+	userOpenID string
+}
+
+func (f *needAuthTokenResolver) ResolveToken(_ context.Context, _ credential.TokenSpec) (*credential.TokenResult, error) {
+	return nil, internalauth.NewNeedUserAuthorizationError(f.userOpenID)
+}
+
+// TestResolveAccessToken_NeedAuthorization_SurfacesAsTypedAuthentication
+// pins that the typed missing-UAT error from the credential chain reaches the
+// caller as a typed AuthenticationError with the marker and sentinel intact.
+func TestResolveAccessToken_NeedAuthorization_SurfacesAsTypedAuthentication(t *testing.T) {
+	ac := &APIClient{
+		HTTP:       &http.Client{},
+		Credential: credential.NewCredentialProvider(nil, nil, &needAuthTokenResolver{userOpenID: "ou_test_user"}, nil),
+		Config:     &core.CliConfig{AppID: "test-app", AppSecret: "test-secret", Brand: core.BrandFeishu},
+	}
+
+	_, err := ac.resolveAccessToken(context.Background(), core.AsUser)
+	if err == nil {
+		t.Fatal("expected error when credential chain signals need_user_authorization, got nil")
+	}
+
+	var authErr *errs.AuthenticationError
+	if !errors.As(err, &authErr) {
+		t.Fatalf("expected *errs.AuthenticationError, got %T (%v)", err, err)
+	}
+	if authErr.Subtype != errs.SubtypeTokenMissing {
+		t.Errorf("Subtype = %v, want %v", authErr.Subtype, errs.SubtypeTokenMissing)
+	}
+	if !strings.Contains(authErr.Message, "need_user_authorization") {
+		t.Errorf("Message must contain the marker 'need_user_authorization' (invariant), got %q", authErr.Message)
+	}
+	// Underlying NeedAuthorizationError preserved in Cause chain so
+	// existing errors.As(&NeedAuthorizationError{}) consumers still match.
+	var needErr *internalauth.NeedAuthorizationError
+	if !errors.As(err, &needErr) {
+		t.Errorf("NeedAuthorizationError not preserved in Cause chain")
+	}
+}
+
+// TestDoSDKRequest_AuthFailureSurfacesTypedAuthenticationError pins the
+// end-to-end invariant codex caught the day this PR landed: when
+// resolveAccessToken fails because no token is cached, DoSDKRequest must
+// surface that as a typed *errs.AuthenticationError — not silently downgrade
+// it to a network error via the SDK-failure wrap.
 //
 // Regression scenario: shortcut path
 // (shortcuts/common/runner.go DoAPI → DoSDKRequest) calling against a user
 // identity with no cached token. Pre-fix this surfaced as exit 4/type=network
 // and routed agents into "check your connection" instead of "log in".
-func TestDoSDKRequest_AuthFailurePreservesAuthCategory(t *testing.T) {
+func TestDoSDKRequest_AuthFailureSurfacesTypedAuthenticationError(t *testing.T) {
 	ac := &APIClient{
 		HTTP:       &http.Client{},
 		Credential: credential.NewCredentialProvider(nil, nil, &failingTokenResolver{}, nil),
@@ -461,22 +624,20 @@ func TestDoSDKRequest_AuthFailurePreservesAuthCategory(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected auth error, got nil")
 	}
-	var exitErr *output.ExitError
-	if !errors.As(err, &exitErr) {
-		t.Fatalf("expected *output.ExitError, got %T", err)
+	var authErr *errs.AuthenticationError
+	if !errors.As(err, &authErr) {
+		t.Fatalf("expected *errs.AuthenticationError, got %T (%v) — WrapDoAPIError must pass typed *errs.* through unchanged", err, err)
 	}
-	if exitErr.Code != output.ExitAuth {
-		t.Fatalf("Code = %d, want %d (auth) — confirms ErrAuth was downgraded to network at SDK wrap", exitErr.Code, output.ExitAuth)
-	}
-	if exitErr.Detail == nil || exitErr.Detail.Type != "auth" {
-		t.Fatalf("Detail.Type = %v, want auth", exitErr.Detail)
+	if authErr.Subtype != errs.SubtypeTokenMissing {
+		t.Errorf("Subtype = %v, want %v", authErr.Subtype, errs.SubtypeTokenMissing)
 	}
 }
 
 // TestDoSDKRequest_TransportFailureWrapsAsNetwork pins that genuinely untyped
-// SDK transport errors get the network classification via WrapDoAPIError.
+// SDK transport errors get the typed network classification via WrapDoAPIError.
 // io.ErrUnexpectedEOF from a RoundTripper surfaces through net/http as a
-// *url.Error, which the wrap classifier recognises as a transport error.
+// *url.Error, which the wrap classifier reaches as the transport-error
+// fallback (no specific subtype matches — falls back to transport).
 func TestDoSDKRequest_TransportFailureWrapsAsNetwork(t *testing.T) {
 	rt := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		return nil, io.ErrUnexpectedEOF
@@ -491,25 +652,29 @@ func TestDoSDKRequest_TransportFailureWrapsAsNetwork(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from broken transport, got nil")
 	}
-	var exitErr *output.ExitError
-	if !errors.As(err, &exitErr) {
-		t.Fatalf("expected *output.ExitError, got %T", err)
+	var netErr *errs.NetworkError
+	if !errors.As(err, &netErr) {
+		t.Fatalf("expected *errs.NetworkError, got %T (%v)", err, err)
 	}
-	if exitErr.Code != output.ExitNetwork {
-		t.Fatalf("Code = %d, want %d (network)", exitErr.Code, output.ExitNetwork)
+	if netErr.Category != errs.CategoryNetwork {
+		t.Errorf("Category = %v, want %v", netErr.Category, errs.CategoryNetwork)
 	}
-	if exitErr.Detail == nil || exitErr.Detail.Type != "network" {
-		t.Fatalf("Detail.Type = %v, want network", exitErr.Detail)
+	if netErr.Subtype != errs.SubtypeNetworkTransport {
+		t.Errorf("Subtype = %v, want %v", netErr.Subtype, errs.SubtypeNetworkTransport)
+	}
+	// io.ErrUnexpectedEOF round-tripping through net/http does not satisfy
+	// any of the specific cause checks; subtype falls back to transport.
+	if output.ExitCodeOf(err) != output.ExitNetwork {
+		t.Errorf("ExitCodeOf = %d, want %d (network)", output.ExitCodeOf(err), output.ExitNetwork)
 	}
 }
 
-// TestCallAPI_ParseJSONFailureWrapsAsAPI pins the legacy-envelope contract for
-// malformed JSON response bodies: WrapJSONResponseParseError emits api_error
-// (exit 1) with the rawAPIJSONHint, so the pagination / cmd/api / cmd/service
-// callers always see a JSON stderr envelope instead of a bare "Error: ..."
-// line. Stage-4 framework-boundary migration will flip this wrapper to typed
-// *errs.InternalError; until then this test pins the legacy shape so we do
-// not regress envelope coverage.
+// TestCallAPI_ParseJSONFailureWrapsAsAPI pins the typed-envelope contract for
+// malformed JSON response bodies: WrapJSONResponseParseError emits
+// *errs.InternalError{Subtype: invalid_response} with the rawAPIJSONHint
+// preserved on Problem.Hint. Pagination / cmd/api / cmd/service callers see
+// the typed JSON stderr envelope (exit 5/internal) — wire `type` is
+// "internal".
 func TestCallAPI_ParseJSONFailureWrapsAsAPI(t *testing.T) {
 	rt := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		return &http.Response{
@@ -529,17 +694,20 @@ func TestCallAPI_ParseJSONFailureWrapsAsAPI(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected JSON parse error, got nil")
 	}
-	var exitErr *output.ExitError
-	if !errors.As(err, &exitErr) {
-		t.Fatalf("expected *output.ExitError, got %T", err)
+	var intErr *errs.InternalError
+	if !errors.As(err, &intErr) {
+		t.Fatalf("expected *errs.InternalError, got %T (%v)", err, err)
 	}
-	if exitErr.Code != output.ExitAPI {
-		t.Fatalf("Code = %d, want %d (api)", exitErr.Code, output.ExitAPI)
+	if intErr.Category != errs.CategoryInternal {
+		t.Errorf("Category = %v, want %v", intErr.Category, errs.CategoryInternal)
 	}
-	if exitErr.Detail == nil || exitErr.Detail.Type != "api_error" {
-		t.Fatalf("Detail.Type = %v, want api_error", exitErr.Detail)
+	if intErr.Subtype != errs.SubtypeInvalidResponse {
+		t.Errorf("Subtype = %v, want %v", intErr.Subtype, errs.SubtypeInvalidResponse)
 	}
-	if exitErr.Detail.Hint != rawAPIJSONHint {
-		t.Errorf("Detail.Hint = %q, want rawAPIJSONHint", exitErr.Detail.Hint)
+	if intErr.Hint != rawAPIJSONHint {
+		t.Errorf("Hint = %q, want rawAPIJSONHint preserved", intErr.Hint)
+	}
+	if output.ExitCodeOf(err) != output.ExitInternal {
+		t.Errorf("ExitCodeOf = %d, want %d (internal)", output.ExitCodeOf(err), output.ExitInternal)
 	}
 }

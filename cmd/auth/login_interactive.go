@@ -10,6 +10,7 @@ import (
 
 	"github.com/charmbracelet/huh"
 
+	"github.com/larksuite/cli/errs"
 	"github.com/larksuite/cli/internal/cmdutil"
 	"github.com/larksuite/cli/internal/core"
 	"github.com/larksuite/cli/internal/output"
@@ -91,16 +92,11 @@ func buildDomainMeta(name, lang string) domainMeta {
 			Description: desc,
 		}
 	}
-	// Fallback: read from from_meta spec (legacy)
-	meta := registry.LoadFromMeta(name)
+	// Fallback: read from the typed service spec (legacy)
 	dm := domainMeta{Name: name}
-	if meta != nil {
-		if t, ok := meta["title"].(string); ok {
-			dm.Title = t
-		}
-		if d, ok := meta["description"].(string); ok {
-			dm.Description = d
-		}
+	if svc, ok := registry.ServiceTyped(name); ok {
+		dm.Title = svc.Title
+		dm.Description = svc.Description
 	}
 	return dm
 }
@@ -162,7 +158,7 @@ func runInteractiveLogin(ios *cmdutil.IOStreams, lang string, msg *loginMsg, bra
 	}
 
 	if len(selectedDomains) == 0 {
-		return nil, output.ErrValidation("no domains selected")
+		return nil, errs.NewValidationError(errs.SubtypeInvalidArgument, "no domains selected").WithParam("--domain")
 	}
 
 	// Compute scope summary

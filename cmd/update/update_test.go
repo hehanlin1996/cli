@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/larksuite/cli/errs"
 	"github.com/larksuite/cli/internal/cmdutil"
 	"github.com/larksuite/cli/internal/core"
 	"github.com/larksuite/cli/internal/output"
@@ -49,10 +50,19 @@ func mockDetectAndNpm(t *testing.T, result selfupdate.DetectResult, npmFn func(s
 		u.DetectOverride = func() selfupdate.DetectResult { return result }
 		u.NpmInstallOverride = npmFn
 		u.VerifyOverride = func(string) error { return nil }
+		u.SkillsIndexFetchOverride = successfulSkillsIndexFetch()
 		u.SkillsCommandOverride = successfulSkillsCommand()
 		return u
 	}
 	t.Cleanup(func() { newUpdater = origNew })
+}
+
+func successfulSkillsIndexFetch() func() *selfupdate.NpmResult {
+	return func() *selfupdate.NpmResult {
+		r := &selfupdate.NpmResult{}
+		r.Stdout.WriteString(`{"skills":[{"name":"lark-calendar"},{"name":"lark-mail"}]}`)
+		return r
+	}
 }
 
 func successfulSkillsCommand() func(args ...string) *selfupdate.NpmResult {
@@ -61,6 +71,8 @@ func successfulSkillsCommand() func(args ...string) *selfupdate.NpmResult {
 		switch strings.Join(args, " ") {
 		case "-y skills add https://open.feishu.cn --list":
 			r.Stdout.WriteString("Available Skills\n │    lark-calendar\n │    lark-mail\n")
+		case "-y skills ls -g --json":
+			r.Stdout.WriteString(`[{"name":"lark-calendar","path":"/tmp/lark-calendar","scope":"global","agents":["Codex"]},{"name":"custom-skill","path":"/tmp/custom-skill","scope":"global","agents":["Codex"]}]`)
 		case "-y skills ls -g":
 			r.Stdout.WriteString("Global Skills\nlark-calendar /tmp/lark-calendar\ncustom-skill /tmp/custom-skill\n")
 		default:
@@ -323,13 +335,88 @@ func TestUpdateFetchError_Human(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected non-nil error, got nil")
 	}
-	var exitErr *output.ExitError
-	if !errors.As(err, &exitErr) {
-		t.Fatalf("expected *output.ExitError, got %T: %v", err, err)
+	var netErr *errs.NetworkError
+	if !errors.As(err, &netErr) {
+		t.Fatalf("expected *errs.NetworkError, got %T: %v", err, err)
 	}
-	if exitErr.Code != output.ExitNetwork {
-		t.Errorf("expected ExitNetwork (%d), got %d", output.ExitNetwork, exitErr.Code)
+	if netErr.Subtype != errs.SubtypeNetworkTransport {
+		t.Errorf("subtype = %q, want %q", netErr.Subtype, errs.SubtypeNetworkTransport)
 	}
+	if got := output.ExitCodeOf(err); got != output.ExitNetwork {
+		t.Errorf("expected ExitNetwork (%d), got %d", output.ExitNetwork, got)
+	}
+}
+
+// TestUpdateInvalidVersion_Human verifies a malformed registry version surfaces
+// as a typed internal error in human mode, keeping the legacy exit code 5.
+func TestUpdateInvalidVersion_Human(t *testing.T) {
+	f, _, _ := newTestFactory(t)
+	cmd := NewCmdUpdate(f)
+	cmd.SetArgs([]string{})
+
+	origFetch := fetchLatest
+	fetchLatest = func() (string, error) { return "not-a-version", nil }
+	defer func() { fetchLatest = origFetch }()
+
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected non-nil error, got nil")
+	}
+	var intErr *errs.InternalError
+	if !errors.As(err, &intErr) {
+		t.Fatalf("expected *errs.InternalError, got %T: %v", err, err)
+	}
+	if intErr.Subtype != errs.SubtypeInvalidResponse {
+		t.Errorf("subtype = %q, want %q", intErr.Subtype, errs.SubtypeInvalidResponse)
+	}
+	if got := output.ExitCodeOf(err); got != output.ExitInternal {
+		t.Errorf("expected ExitInternal (%d), got %d", output.ExitInternal, got)
+	}
+}
+
+// TestReportError pins reportError's two surfaces after the typed migration:
+// human mode returns the typed error unchanged; JSON mode prints the legacy
+// {ok:false, error:{type, message}} envelope and exits bare with the typed
+// error's exit code (parity with the legacy explicit exit-code argument).
+func TestReportError(t *testing.T) {
+	t.Run("human mode returns the typed error", func(t *testing.T) {
+		f, _, _ := newTestFactory(t)
+		typed := errs.NewAPIError(errs.SubtypeUnknown, "failed to prepare update: disk full")
+		err := reportError(&UpdateOptions{JSON: false}, f.IOStreams, "update_error", typed)
+		var apiErr *errs.APIError
+		if !errors.As(err, &apiErr) {
+			t.Fatalf("expected *errs.APIError, got %T: %v", err, err)
+		}
+		if apiErr != typed {
+			t.Errorf("reportError must return the typed error unchanged")
+		}
+		if got := output.ExitCodeOf(err); got != output.ExitAPI {
+			t.Errorf("exit code = %d, want %d (ExitAPI, legacy parity)", got, output.ExitAPI)
+		}
+	})
+
+	t.Run("json mode prints envelope and exits bare with typed code", func(t *testing.T) {
+		f, stdout, _ := newTestFactory(t)
+		typed := errs.NewNetworkError(errs.SubtypeNetworkTransport, "failed to check latest version: timeout")
+		err := reportError(&UpdateOptions{JSON: true}, f.IOStreams, "network", typed)
+		var bareErr *output.BareError
+		if !errors.As(err, &bareErr) {
+			t.Fatalf("expected bare *output.BareError, got %T: %v", err, err)
+		}
+		if bareErr.Code != output.ExitNetwork {
+			t.Errorf("bare exit code = %d, want %d", bareErr.Code, output.ExitNetwork)
+		}
+		out := stdout.String()
+		if !strings.Contains(out, `"type": "network"`) && !strings.Contains(out, `"type":"network"`) {
+			t.Errorf("JSON envelope missing type, got: %s", out)
+		}
+		if !strings.Contains(out, "failed to check latest version: timeout") {
+			t.Errorf("JSON envelope missing message, got: %s", out)
+		}
+	})
 }
 
 func TestUpdateInvalidVersion_JSON(t *testing.T) {
@@ -476,6 +563,10 @@ func TestUpdateNpmVerifyFail_JSON_NoRestoreHintWhenBackupUnavailable(t *testing.
 		u.NpmInstallOverride = func(version string) *selfupdate.NpmResult { return &selfupdate.NpmResult{} }
 		u.VerifyOverride = func(string) error { return errors.New("bad binary") }
 		u.RestoreAvailableOverride = func() bool { return false }
+		u.SkillsIndexFetchOverride = func() *selfupdate.NpmResult {
+			t.Fatal("skills sync should not run when binary verification fails")
+			return nil
+		}
 		u.SkillsCommandOverride = func(args ...string) *selfupdate.NpmResult {
 			t.Fatal("skills sync should not run when binary verification fails")
 			return nil
@@ -488,12 +579,12 @@ func TestUpdateNpmVerifyFail_JSON_NoRestoreHintWhenBackupUnavailable(t *testing.
 	if err == nil {
 		t.Fatal("expected verification failure")
 	}
-	var exitErr *output.ExitError
-	if !errors.As(err, &exitErr) {
-		t.Fatalf("expected *output.ExitError, got %T: %v", err, err)
+	var bareErr *output.BareError
+	if !errors.As(err, &bareErr) {
+		t.Fatalf("expected *output.BareError, got %T: %v", err, err)
 	}
-	if exitErr.Code != output.ExitAPI {
-		t.Fatalf("expected ExitAPI (%d), got %d", output.ExitAPI, exitErr.Code)
+	if bareErr.Code != output.ExitAPI {
+		t.Fatalf("expected ExitAPI (%d), got %d", output.ExitAPI, bareErr.Code)
 	}
 
 	out := stdout.String()
@@ -808,6 +899,11 @@ func TestUpdateNpm_SkillsFail_JSON(t *testing.T) {
 		}
 		u.NpmInstallOverride = func(version string) *selfupdate.NpmResult { return &selfupdate.NpmResult{} }
 		u.VerifyOverride = func(string) error { return nil }
+		u.SkillsIndexFetchOverride = func() *selfupdate.NpmResult {
+			r := &selfupdate.NpmResult{}
+			r.Err = fmt.Errorf("index unavailable")
+			return r
+		}
 		u.SkillsCommandOverride = func(args ...string) *selfupdate.NpmResult {
 			r := &selfupdate.NpmResult{}
 			r.Stderr.WriteString("npx: command not found")
@@ -860,6 +956,11 @@ func TestUpdateNpm_SkillsFail_Human(t *testing.T) {
 		}
 		u.NpmInstallOverride = func(version string) *selfupdate.NpmResult { return &selfupdate.NpmResult{} }
 		u.VerifyOverride = func(string) error { return nil }
+		u.SkillsIndexFetchOverride = func() *selfupdate.NpmResult {
+			r := &selfupdate.NpmResult{}
+			r.Err = fmt.Errorf("index unavailable")
+			return r
+		}
 		u.SkillsCommandOverride = func(args ...string) *selfupdate.NpmResult {
 			r := &selfupdate.NpmResult{}
 			r.Stderr.WriteString("npx: command not found")
@@ -1004,6 +1105,7 @@ func TestUpdateRun_AlreadyLatest_RunsSkillsSync(t *testing.T) {
 	t.Cleanup(func() { newUpdater = origNew })
 	newUpdater = func() *selfupdate.Updater {
 		return &selfupdate.Updater{
+			SkillsIndexFetchOverride: successfulSkillsIndexFetch(),
 			SkillsCommandOverride: func(args ...string) *selfupdate.NpmResult {
 				skillsCalled = true
 				return successfulSkillsCommand()(args...)
@@ -1042,6 +1144,7 @@ func TestUpdateRun_Manual_RunsSkillsSync(t *testing.T) {
 	t.Cleanup(func() { newUpdater = origNew })
 	newUpdater = func() *selfupdate.Updater {
 		return &selfupdate.Updater{
+			SkillsIndexFetchOverride: successfulSkillsIndexFetch(),
 			DetectOverride: func() selfupdate.DetectResult {
 				return selfupdate.DetectResult{
 					Method:       selfupdate.InstallManual,
@@ -1086,6 +1189,7 @@ func TestUpdateRun_Npm_RunsSkillsSync_WritesLatestState(t *testing.T) {
 	t.Cleanup(func() { newUpdater = origNew })
 	newUpdater = func() *selfupdate.Updater {
 		return &selfupdate.Updater{
+			SkillsIndexFetchOverride: successfulSkillsIndexFetch(),
 			DetectOverride: func() selfupdate.DetectResult {
 				return selfupdate.DetectResult{
 					Method: selfupdate.InstallNpm, NpmAvailable: true,
@@ -1145,6 +1249,10 @@ func TestUpdateRun_CheckIncludesSkillsStatus(t *testing.T) {
 			DetectOverride: func() selfupdate.DetectResult {
 				return selfupdate.DetectResult{Method: selfupdate.InstallNpm, NpmAvailable: true}
 			},
+			SkillsIndexFetchOverride: func() *selfupdate.NpmResult {
+				skillsCalled = true
+				return successfulSkillsIndexFetch()()
+			},
 			SkillsCommandOverride: func(args ...string) *selfupdate.NpmResult {
 				skillsCalled = true
 				return successfulSkillsCommand()(args...)
@@ -1194,6 +1302,10 @@ func TestUpdateRun_CheckAlreadyLatest_NoSideEffect(t *testing.T) {
 	t.Cleanup(func() { newUpdater = origNew })
 	newUpdater = func() *selfupdate.Updater {
 		return &selfupdate.Updater{
+			SkillsIndexFetchOverride: func() *selfupdate.NpmResult {
+				skillsCalled = true
+				return successfulSkillsIndexFetch()()
+			},
 			SkillsCommandOverride: func(args ...string) *selfupdate.NpmResult {
 				skillsCalled = true
 				return successfulSkillsCommand()(args...)

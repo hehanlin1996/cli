@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/larksuite/cli/errs"
+	"github.com/larksuite/cli/internal/errclass"
 	"github.com/larksuite/cli/internal/output"
 )
 
@@ -243,9 +245,10 @@ func TestValidateDriveSearchIDs(t *testing.T) {
 	t.Run("all valid", func(t *testing.T) {
 		t.Parallel()
 		spec := driveSearchSpec{
-			CreatorIDs: []string{"ou_aaa"},
-			ChatIDs:    []string{"oc_xxx"},
-			SharerIDs:  []string{"ou_bbb"},
+			CreatorIDs:         []string{"ou_aaa"},
+			OriginalCreatorIDs: []string{"ou_ccc"},
+			ChatIDs:            []string{"oc_xxx"},
+			SharerIDs:          []string{"ou_bbb"},
 		}
 		if err := validateDriveSearchIDs(spec); err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -257,6 +260,37 @@ func TestValidateDriveSearchIDs(t *testing.T) {
 		err := validateDriveSearchIDs(driveSearchSpec{CreatorIDs: []string{"u_bad"}})
 		if err == nil || !strings.Contains(err.Error(), "--creator-ids") {
 			t.Fatalf("expected --creator-ids error, got: %v", err)
+		}
+		var vErr *errs.ValidationError
+		if !errors.As(err, &vErr) {
+			t.Fatalf("expected *errs.ValidationError, got %T", err)
+		}
+		if vErr.Subtype != errs.SubtypeInvalidArgument {
+			t.Fatalf("Subtype = %q, want %q", vErr.Subtype, errs.SubtypeInvalidArgument)
+		}
+		if vErr.Param != "--creator-ids" {
+			t.Fatalf("Param = %q, want --creator-ids", vErr.Param)
+		}
+		if got := output.ExitCodeOf(err); got != output.ExitValidation {
+			t.Fatalf("exit code = %d, want ExitValidation (%d)", got, output.ExitValidation)
+		}
+	})
+
+	t.Run("bad original creator id format", func(t *testing.T) {
+		t.Parallel()
+		err := validateDriveSearchIDs(driveSearchSpec{OriginalCreatorIDs: []string{"u_bad"}})
+		if err == nil || !strings.Contains(err.Error(), "--original-creator-ids") {
+			t.Fatalf("expected --original-creator-ids error, got: %v", err)
+		}
+		var vErr *errs.ValidationError
+		if !errors.As(err, &vErr) {
+			t.Fatalf("expected *errs.ValidationError, got %T", err)
+		}
+		if vErr.Subtype != errs.SubtypeInvalidArgument {
+			t.Fatalf("Subtype = %q, want %q", vErr.Subtype, errs.SubtypeInvalidArgument)
+		}
+		if vErr.Param != "--original-creator-ids" {
+			t.Fatalf("Param = %q, want --original-creator-ids", vErr.Param)
 		}
 	})
 
@@ -625,51 +659,39 @@ func TestEnrichDriveSearchError(t *testing.T) {
 		}
 	})
 
-	t.Run("ExitError without Detail passes through", func(t *testing.T) {
+	t.Run("typed error with non-matching code passes through", func(t *testing.T) {
 		t.Parallel()
-		orig := &output.ExitError{Code: 1}
-		if got := enrichDriveSearchError(orig); got != orig {
-			t.Fatalf("ExitError without Detail should pass through unchanged")
-		}
-	})
-
-	t.Run("ExitError with non-matching code passes through", func(t *testing.T) {
-		t.Parallel()
-		orig := &output.ExitError{
-			Code:   1,
-			Detail: &output.ErrDetail{Code: 12345, Message: "other"},
-		}
+		orig := errclass.BuildAPIError(
+			map[string]any{"code": float64(12345), "msg": "other"},
+			errclass.ClassifyContext{},
+		)
 		if got := enrichDriveSearchError(orig); got != orig {
 			t.Fatalf("non-matching code should pass through unchanged")
 		}
 	})
 
-	t.Run("matching code rewrites Hint without mutating original", func(t *testing.T) {
+	t.Run("matching code decorates the typed error's hint in place", func(t *testing.T) {
 		t.Parallel()
-		orig := &output.ExitError{
-			Code: 1,
-			Detail: &output.ErrDetail{
-				Code:    driveSearchErrUserNotVisible,
-				Message: "[99992351] user not visible",
-				Hint:    "",
-			},
-		}
+		orig := errclass.BuildAPIError(
+			map[string]any{"code": float64(driveSearchErrUserNotVisible), "msg": "[99992351] user not visible"},
+			errclass.ClassifyContext{},
+		)
+		// Terminal decoration of an upstream error: the hint is set in place on
+		// the existing typed Problem and that same error is returned (no new
+		// error is constructed).
 		enriched := enrichDriveSearchError(orig)
-		eErr, ok := enriched.(*output.ExitError)
+		if enriched != orig {
+			t.Fatal("should decorate and return the upstream error, not construct a new one")
+		}
+		p, ok := errs.ProblemOf(enriched)
 		if !ok {
-			t.Fatalf("expected *output.ExitError, got %T", enriched)
+			t.Fatalf("expected a typed errs.* error, got %T", enriched)
 		}
-		if eErr == orig {
-			t.Fatal("should return a new ExitError, not mutate the original")
+		if !strings.Contains(p.Hint, "--creator-ids") {
+			t.Fatalf("hint should mention --creator-ids, got %q", p.Hint)
 		}
-		if orig.Detail.Hint != "" {
-			t.Fatal("original Detail.Hint must remain unchanged")
-		}
-		if !strings.Contains(eErr.Detail.Hint, "--creator-ids") {
-			t.Fatalf("hint should mention --creator-ids, got %q", eErr.Detail.Hint)
-		}
-		if eErr.Detail.Message != orig.Detail.Message {
-			t.Fatalf("Message should be preserved, got %q", eErr.Detail.Message)
+		if p.Message != "[99992351] user not visible" {
+			t.Fatalf("Message should be preserved, got %q", p.Message)
 		}
 	})
 }
@@ -724,6 +746,33 @@ func TestBuildDriveSearchRequest(t *testing.T) {
 		}
 	})
 
+	t.Run("--created-by-me fills original_creator_ids from userOpenID", func(t *testing.T) {
+		t.Parallel()
+		req, _, err := buildDriveSearchRequest(driveSearchSpec{CreatedByMe: true}, userOpenID, now)
+		if err != nil {
+			t.Fatalf("err: %v", err)
+		}
+		got := req["doc_filter"].(map[string]interface{})["original_creator_ids"].([]string)
+		if len(got) != 1 || got[0] != userOpenID {
+			t.Fatalf("expected [userOpenID], got %v", got)
+		}
+	})
+
+	t.Run("--original-creator-ids fills original_creator_ids", func(t *testing.T) {
+		t.Parallel()
+		spec := driveSearchSpec{OriginalCreatorIDs: []string{"ou_a", "ou_b"}}
+		req, _, err := buildDriveSearchRequest(spec, userOpenID, now)
+		if err != nil {
+			t.Fatalf("err: %v", err)
+		}
+		for _, filterKey := range []string{"doc_filter", "wiki_filter"} {
+			got := req[filterKey].(map[string]interface{})["original_creator_ids"].([]string)
+			if !reflect.DeepEqual(got, []string{"ou_a", "ou_b"}) {
+				t.Fatalf("%s: expected explicit original creator ids, got %v", filterKey, got)
+			}
+		}
+	})
+
 	t.Run("--mine without userOpenID errors", func(t *testing.T) {
 		t.Parallel()
 		_, _, err := buildDriveSearchRequest(driveSearchSpec{Mine: true}, "", now)
@@ -732,11 +781,40 @@ func TestBuildDriveSearchRequest(t *testing.T) {
 		}
 	})
 
+	t.Run("--created-by-me without userOpenID errors", func(t *testing.T) {
+		t.Parallel()
+		_, _, err := buildDriveSearchRequest(driveSearchSpec{CreatedByMe: true}, "", now)
+		if err == nil || !strings.Contains(err.Error(), "--created-by-me") {
+			t.Fatalf("expected --created-by-me error, got: %v", err)
+		}
+	})
+
 	t.Run("--mine + --creator-ids mutually exclusive", func(t *testing.T) {
 		t.Parallel()
 		spec := driveSearchSpec{Mine: true, CreatorIDs: []string{"ou_x"}}
 		_, _, err := buildDriveSearchRequest(spec, userOpenID, now)
 		if err == nil || !strings.Contains(err.Error(), "--mine") {
+			t.Fatalf("expected exclusion error, got: %v", err)
+		}
+		// Mutual-exclusion error: typed validation, but no single attributable
+		// flag, so Param stays empty.
+		var vErr *errs.ValidationError
+		if !errors.As(err, &vErr) {
+			t.Fatalf("expected *errs.ValidationError, got %T", err)
+		}
+		if vErr.Subtype != errs.SubtypeInvalidArgument {
+			t.Fatalf("Subtype = %q, want %q", vErr.Subtype, errs.SubtypeInvalidArgument)
+		}
+		if vErr.Param != "" {
+			t.Fatalf("Param = %q, want empty for mutual-exclusion error", vErr.Param)
+		}
+	})
+
+	t.Run("--created-by-me + --original-creator-ids mutually exclusive", func(t *testing.T) {
+		t.Parallel()
+		spec := driveSearchSpec{CreatedByMe: true, OriginalCreatorIDs: []string{"ou_x"}}
+		_, _, err := buildDriveSearchRequest(spec, userOpenID, now)
+		if err == nil || !strings.Contains(err.Error(), "--created-by-me") {
 			t.Fatalf("expected exclusion error, got: %v", err)
 		}
 	})

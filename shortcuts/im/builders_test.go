@@ -317,6 +317,17 @@ func TestShortcutValidateBranches(t *testing.T) {
 		}
 	})
 
+	t.Run("ImChatSearch invalid chat-modes value", func(t *testing.T) {
+		runtime := newTestRuntimeContext(t, map[string]string{
+			"query":      "ok",
+			"chat-modes": "group,bogus",
+		}, nil)
+		err := ImChatSearch.Validate(context.Background(), runtime)
+		if err == nil || !strings.Contains(err.Error(), "invalid --chat-modes value") {
+			t.Fatalf("ImChatSearch.Validate() error = %v", err)
+		}
+	})
+
 	t.Run("ImChatUpdate requires fields", func(t *testing.T) {
 		runtime := newTestRuntimeContext(t, map[string]string{
 			"chat-id": "oc_123",
@@ -693,6 +704,39 @@ func TestShortcutDryRunShapes(t *testing.T) {
 		}
 	})
 
+	t.Run("ImChatSearch dry run maps chat-modes to wire values", func(t *testing.T) {
+		runtime := newTestRuntimeContext(t, map[string]string{
+			"query":      "team-alpha",
+			"chat-modes": "group,topic",
+		}, nil)
+		got := mustMarshalDryRun(t, ImChatSearch.DryRun(context.Background(), runtime))
+		if !strings.Contains(got, `"chat_modes":["default","thread"]`) {
+			t.Fatalf("ImChatSearch.DryRun() chat_modes mapping = %s", got)
+		}
+	})
+
+	t.Run("ImChatSearch dry run maps single chat-mode topic", func(t *testing.T) {
+		runtime := newTestRuntimeContext(t, map[string]string{
+			"query":      "team-alpha",
+			"chat-modes": "topic",
+		}, nil)
+		got := mustMarshalDryRun(t, ImChatSearch.DryRun(context.Background(), runtime))
+		if !strings.Contains(got, `"chat_modes":["thread"]`) {
+			t.Fatalf("ImChatSearch.DryRun() chat_modes mapping = %s", got)
+		}
+	})
+
+	t.Run("ImChatSearch dry run dedupes chat-modes", func(t *testing.T) {
+		runtime := newTestRuntimeContext(t, map[string]string{
+			"query":      "team-alpha",
+			"chat-modes": "group, group",
+		}, nil)
+		got := mustMarshalDryRun(t, ImChatSearch.DryRun(context.Background(), runtime))
+		if !strings.Contains(got, `"chat_modes":["default"]`) {
+			t.Fatalf("ImChatSearch.DryRun() chat_modes dedupe = %s", got)
+		}
+	})
+
 	t.Run("ImMessagesSearch dry run uses messages search endpoint", func(t *testing.T) {
 		runtime := newMessagesSearchTestRuntimeContext(t, map[string]string{
 			"query":      "incident",
@@ -729,6 +773,18 @@ func TestShortcutDryRunShapes(t *testing.T) {
 		}
 	})
 
+	t.Run("ImMessagesSend dry run warns chat membership is not verified", func(t *testing.T) {
+		runtime := newTestRuntimeContext(t, map[string]string{
+			"chat-id": "oc_123",
+			"text":    "hello",
+		}, nil)
+		got := mustMarshalDryRun(t, ImMessagesSend.DryRun(context.Background(), runtime))
+		if !strings.Contains(got, "Bot/user membership in the target chat is not verified") ||
+			!strings.Contains(got, "Bot/User can NOT be out of the chat") {
+			t.Fatalf("ImMessagesSend.DryRun() missing membership warning: %s", got)
+		}
+	})
+
 	t.Run("ImMessagesSend dry run uses placeholder media key for url input", func(t *testing.T) {
 		runtime := newTestRuntimeContext(t, map[string]string{
 			"chat-id": "oc_123",
@@ -739,6 +795,19 @@ func TestShortcutDryRunShapes(t *testing.T) {
 			!strings.Contains(got, `"msg_type":"image"`) ||
 			!strings.Contains(got, `\"image_key\":\"img_dryrun_upload\"`) {
 			t.Fatalf("ImMessagesSend.DryRun() = %s", got)
+		}
+	})
+
+	t.Run("ImMessagesSend dry run preserves media and membership descriptions", func(t *testing.T) {
+		runtime := newTestRuntimeContext(t, map[string]string{
+			"chat-id": "oc_123",
+			"image":   "https://example.com/a.png",
+		}, nil)
+		mediaDesc := `"description":"dry-run uses placeholder media keys for --image URL input; execution uploads it before sending"`
+		membershipDesc := `"desc":"NOTE: dry-run validates request shape only. Bot/user membership in the target chat is not verified; the real send may fail with ` + "`Bot/User can NOT be out of the chat`" + `."`
+		got := mustMarshalDryRun(t, ImMessagesSend.DryRun(context.Background(), runtime))
+		if !strings.Contains(got, mediaDesc) || !strings.Contains(got, membershipDesc) {
+			t.Fatalf("ImMessagesSend.DryRun() should preserve both descriptions: %s", got)
 		}
 	})
 
@@ -772,7 +841,7 @@ func TestShortcutDryRunShapes(t *testing.T) {
 			"page-size": "10",
 		}, nil)
 		got := mustMarshalDryRun(t, ImThreadsMessagesList.DryRun(context.Background(), runtime))
-		if !strings.Contains(got, `"container_id":"omt_123"`) || !strings.Contains(got, `"sort_type":"ByCreateTimeDesc"`) || !strings.Contains(got, `"page_size":10`) {
+		if !strings.Contains(got, `"container_id":"omt_123"`) || !strings.Contains(got, `"sort_type":"ByCreateTimeDesc"`) || !strings.Contains(got, `"page_size":"10"`) {
 			t.Fatalf("ImThreadsMessagesList.DryRun() = %s", got)
 		}
 	})
@@ -832,7 +901,7 @@ func TestShortcutDryRunShapes(t *testing.T) {
 	t.Run("ImChatList dry run includes endpoint and params", func(t *testing.T) {
 		runtime := newTestRuntimeContext(t, map[string]string{
 			"user-id-type": "open_id",
-			"sort-type":    "ByCreateTimeAsc",
+			"sort":         "create_time",
 		}, nil)
 		got := mustMarshalDryRun(t, ImChatList.DryRun(context.Background(), runtime))
 		if !strings.Contains(got, `"/open-apis/im/v1/chats"`) {

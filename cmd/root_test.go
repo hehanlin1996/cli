@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 
@@ -20,6 +21,8 @@ import (
 	internalauth "github.com/larksuite/cli/internal/auth"
 	"github.com/larksuite/cli/internal/cmdutil"
 	"github.com/larksuite/cli/internal/core"
+	"github.com/larksuite/cli/internal/deprecation"
+	"github.com/larksuite/cli/internal/output"
 	"github.com/larksuite/cli/internal/registry"
 )
 
@@ -134,84 +137,96 @@ func TestIsCompletionCommand(t *testing.T) {
 	}
 }
 
-// TestPromoteConfigError_* lives with the implementation in
-// internal/errcompat/promote_test.go.
-
-// TestHandleRootError_SecurityPolicyKeepsLegacyEnvelope pins the carve-out
-// for *errs.SecurityPolicyError: it does NOT go through the typed envelope
-// writer. Downstream OAuth/policy consumers parse a wire format that
-// predates the typed taxonomy and depend on:
-//   - error.type == "auth_error" (not the Category literal "policy")
-//   - error.code is a string ("challenge_required" / "access_denied"), not a number
-//   - error.retryable is present at the top of the error object
-//   - exit code 1 (not ExitContentSafety 6)
-//
-// Migration of this category to the typed envelope is deferred to a later PR.
-func TestHandleRootError_SecurityPolicyKeepsLegacyEnvelope(t *testing.T) {
+// TestHandleRootError_SecurityPolicyCanonicalEnvelope verifies that
+// *errs.SecurityPolicyError flows through the canonical typed envelope
+// (output.WriteTypedErrorEnvelope) — type=policy, numeric code, subtype,
+// top-level identity, exit code 6 — after the dispatcher carve-out is removed.
+func TestHandleRootError_SecurityPolicyCanonicalEnvelope(t *testing.T) {
 	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", t.TempDir())
-	cases := []struct {
-		name     string
-		subtype  errs.Subtype
-		code     int
-		wantCode string
-	}{
-		{"challenge_required", errs.SubtypeChallengeRequired, 21000, "challenge_required"},
-		{"access_denied", errs.SubtypeAccessDenied, 21001, "access_denied"},
-	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			f, _, _, _ := cmdutil.TestFactory(t, nil)
-			errOut := &bytes.Buffer{}
-			f.IOStreams.ErrOut = errOut
+	t.Run("21000 challenge_required", func(t *testing.T) {
+		f, _, _, _ := cmdutil.TestFactory(t, nil)
+		errOut := &bytes.Buffer{}
+		f.IOStreams.ErrOut = errOut
 
-			spErr := &errs.SecurityPolicyError{
-				Problem: errs.Problem{
-					Category: errs.CategoryPolicy,
-					Subtype:  tc.subtype,
-					Code:     tc.code,
-					Message:  "blocked by access policy",
-					Hint:     "complete challenge in your browser",
-				},
-				ChallengeURL: "https://example.com/challenge",
-			}
+		spErr := &errs.SecurityPolicyError{
+			Problem: errs.Problem{
+				Category: errs.CategoryPolicy,
+				Subtype:  errs.SubtypeChallengeRequired,
+				Code:     21000,
+				Message:  "blocked by access policy",
+				Hint:     "complete challenge in your browser",
+			},
+			ChallengeURL: "https://example.com/challenge",
+		}
 
-			gotExit := handleRootError(f, spErr)
-			if gotExit != 1 {
-				t.Errorf("exit code = %d, want 1 (legacy carve-out)", gotExit)
-			}
+		gotExit := handleRootError(f, spErr)
+		if gotExit != int(output.ExitContentSafety) {
+			t.Errorf("exit code = %d, want %d (ExitContentSafety)", gotExit, output.ExitContentSafety)
+		}
 
-			var env map[string]any
-			if err := json.Unmarshal(errOut.Bytes(), &env); err != nil {
-				t.Fatalf("envelope is not valid JSON: %v\n%s", err, errOut.String())
-			}
-			errObj, ok := env["error"].(map[string]any)
-			if !ok {
-				t.Fatalf("envelope missing top-level error object: %s", errOut.String())
-			}
-			if got := errObj["type"]; got != "auth_error" {
-				t.Errorf("error.type = %v, want %q", got, "auth_error")
-			}
-			if got := errObj["code"]; got != tc.wantCode {
-				t.Errorf("error.code = %v (%T), want %q (string)", got, got, tc.wantCode)
-			}
-			if got, ok := errObj["retryable"].(bool); !ok || got {
-				t.Errorf("error.retryable = %v (%T), want false (bool)", errObj["retryable"], errObj["retryable"])
-			}
-			if got := errObj["challenge_url"]; got != "https://example.com/challenge" {
-				t.Errorf("error.challenge_url = %v, want challenge url", got)
-			}
-			if got := errObj["hint"]; got != "complete challenge in your browser" {
-				t.Errorf("error.hint = %v, want hint message", got)
-			}
-			// And the typed-only fields must NOT appear on this envelope.
-			for _, leaked := range []string{"subtype", "missing_scopes", "console_url"} {
-				if _, exists := errObj[leaked]; exists {
-					t.Errorf("error.%s leaked into legacy security envelope: %v", leaked, errObj[leaked])
-				}
-			}
-		})
-	}
+		var env map[string]any
+		if err := json.Unmarshal(errOut.Bytes(), &env); err != nil {
+			t.Fatalf("envelope is not valid JSON: %v\n%s", err, errOut.String())
+		}
+		errObj, ok := env["error"].(map[string]any)
+		if !ok {
+			t.Fatalf("envelope missing top-level error object: %s", errOut.String())
+		}
+		if got := errObj["type"]; got != "policy" {
+			t.Errorf("error.type = %v, want %q", got, "policy")
+		}
+		if got := errObj["subtype"]; got != "challenge_required" {
+			t.Errorf("error.subtype = %v, want %q", got, "challenge_required")
+		}
+		if got, ok := errObj["code"].(float64); !ok || int(got) != 21000 {
+			t.Errorf("error.code = %v (%T), want 21000 (number)", errObj["code"], errObj["code"])
+		}
+		if got := errObj["challenge_url"]; got != "https://example.com/challenge" {
+			t.Errorf("error.challenge_url = %v, want challenge url", got)
+		}
+		if got := errObj["hint"]; got != "complete challenge in your browser" {
+			t.Errorf("error.hint = %v, want hint message", got)
+		}
+		if _, exists := errObj["retryable"]; exists {
+			t.Errorf("error.retryable leaked into canonical envelope: %v", errObj["retryable"])
+		}
+	})
+
+	t.Run("21001 access_denied", func(t *testing.T) {
+		f, _, _, _ := cmdutil.TestFactory(t, nil)
+		errOut := &bytes.Buffer{}
+		f.IOStreams.ErrOut = errOut
+
+		spErr := &errs.SecurityPolicyError{
+			Problem: errs.Problem{
+				Category: errs.CategoryPolicy,
+				Subtype:  errs.SubtypeAccessDenied,
+				Code:     21001,
+				Message:  "access denied",
+			},
+		}
+
+		gotExit := handleRootError(f, spErr)
+		if gotExit != int(output.ExitContentSafety) {
+			t.Errorf("exit code = %d, want %d", gotExit, output.ExitContentSafety)
+		}
+
+		var env map[string]any
+		if err := json.Unmarshal(errOut.Bytes(), &env); err != nil {
+			t.Fatalf("envelope is not valid JSON: %v\n%s", err, errOut.String())
+		}
+		errObj := env["error"].(map[string]any)
+		if got := errObj["type"]; got != "policy" {
+			t.Errorf("error.type = %v, want %q", got, "policy")
+		}
+		if got := errObj["subtype"]; got != "access_denied" {
+			t.Errorf("error.subtype = %v, want %q", got, "access_denied")
+		}
+		if got, ok := errObj["code"].(float64); !ok || int(got) != 21001 {
+			t.Errorf("error.code = %v, want 21001 (number)", errObj["code"])
+		}
+	})
 }
 
 // newAuthErrorWithNeedAuthMarker builds a typed *errs.AuthenticationError whose Message
@@ -227,6 +242,264 @@ func newAuthErrorWithNeedAuthMarker() *errs.AuthenticationError {
 			Message:  fmt.Sprintf("API call failed: %s", cause),
 		},
 		Cause: cause,
+	}
+}
+
+// failingWriter writes up to limit bytes then returns io.ErrShortWrite on
+// the write that would push past the limit. Used to simulate a stderr that
+// dies mid-envelope.
+type failingWriter struct {
+	limit int
+	n     int
+}
+
+func (f *failingWriter) Write(p []byte) (int, error) {
+	if f.n+len(p) > f.limit {
+		canWrite := f.limit - f.n
+		if canWrite < 0 {
+			canWrite = 0
+		}
+		f.n += canWrite
+		return canWrite, io.ErrShortWrite
+	}
+	f.n += len(p)
+	return len(p), nil
+}
+
+// TestHandleRootError_DeprecatedAliasMissingFlagStructured pins that a
+// backward-compat alias failing on a cobra-level required flag (which
+// short-circuits before RunE) routes through the structured envelope, so the
+// deprecation notice OnInvoke records in PreRunE is carried on the wire instead
+// of being dropped on a plain "Error:" line.
+func TestHandleRootError_DeprecatedAliasMissingFlagStructured(t *testing.T) {
+	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", t.TempDir())
+	t.Cleanup(func() { deprecation.SetPending(nil) })
+
+	f, _, _, _ := cmdutil.TestFactory(t, nil)
+	errOut := &bytes.Buffer{}
+	f.IOStreams.ErrOut = errOut
+
+	deprecation.SetPending(&deprecation.Notice{
+		Command: "+write", Replacement: "+cells-set", Skill: "lark-sheets",
+	})
+	// The bare error shape cobra's ValidateRequiredFlags produces: not a typed
+	// errs.* error, so it reaches the deprecation fallback.
+	exit := handleRootError(f, fmt.Errorf(`required flag(s) %q not set`, "values"))
+
+	out := errOut.String()
+	if strings.HasPrefix(strings.TrimSpace(out), "Error:") {
+		t.Fatalf("deprecation pending: want a structured envelope, got a plain Error: line:\n%s", out)
+	}
+	if !strings.Contains(out, `"message"`) || !strings.Contains(out, "values") {
+		t.Errorf("expected a JSON error envelope carrying the failure message; got:\n%s", out)
+	}
+	// The envelope is typed validation, so the exit code must derive from that
+	// category (2) — the wire type and the exit code must not disagree.
+	if exit != int(output.ExitValidation) {
+		t.Errorf("exit = %d, want %d (validation envelope → category-derived exit)", exit, int(output.ExitValidation))
+	}
+}
+
+// TestHandleRootError_AuthConfigWireGolden is the wire-consistency regression
+// baseline for auth/config errors: it pins the typed envelope and exit code the
+// dispatcher produces for the two source-of-truth shapes, which are constructed
+// typed at their origin in internal/auth and internal/core.
+func TestHandleRootError_AuthConfigWireGolden(t *testing.T) {
+	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", t.TempDir())
+
+	t.Run("token missing exits 3 with token_missing authentication envelope", func(t *testing.T) {
+		f, _, _, _ := cmdutil.TestFactory(t, nil)
+		errOut := &bytes.Buffer{}
+		f.IOStreams.ErrOut = errOut
+
+		exit := handleRootError(f, internalauth.NewNeedUserAuthorizationError("u_golden"))
+		if exit != int(output.ExitAuth) {
+			t.Errorf("exit = %d, want %d (ExitAuth)", exit, int(output.ExitAuth))
+		}
+
+		errObj := decodeErrorEnvelope(t, errOut.Bytes())
+		if got := errObj["type"]; got != "authentication" {
+			t.Errorf("error.type = %v, want %q", got, "authentication")
+		}
+		if got := errObj["subtype"]; got != "token_missing" {
+			t.Errorf("error.subtype = %v, want %q", got, "token_missing")
+		}
+		if got, _ := errObj["message"].(string); !strings.Contains(got, "need_user_authorization") {
+			t.Errorf("error.message = %q, must keep the need_user_authorization marker", got)
+		}
+		if got, _ := errObj["message"].(string); !strings.Contains(got, "u_golden") {
+			t.Errorf("error.message = %q, must carry the user open id", got)
+		}
+		if got, _ := errObj["hint"].(string); !strings.Contains(got, "auth login") {
+			t.Errorf("error.hint = %q, must point at auth login", got)
+		}
+		if got := errObj["user_open_id"]; got != "u_golden" {
+			t.Errorf("error.user_open_id = %v, want %q", got, "u_golden")
+		}
+	})
+
+	t.Run("not configured exits 3 with not_configured config envelope", func(t *testing.T) {
+		f, _, _, _ := cmdutil.TestFactory(t, nil)
+		errOut := &bytes.Buffer{}
+		f.IOStreams.ErrOut = errOut
+
+		exit := handleRootError(f, core.NotConfiguredError())
+		if exit != int(output.ExitAuth) {
+			t.Errorf("exit = %d, want %d (config shares ExitAuth)", exit, int(output.ExitAuth))
+		}
+
+		errObj := decodeErrorEnvelope(t, errOut.Bytes())
+		if got := errObj["type"]; got != "config" {
+			t.Errorf("error.type = %v, want %q", got, "config")
+		}
+		if got := errObj["subtype"]; got != "not_configured" {
+			t.Errorf("error.subtype = %v, want %q", got, "not_configured")
+		}
+		if got, _ := errObj["message"].(string); !strings.Contains(got, "not configured") {
+			t.Errorf("error.message = %q, want the not-configured message", got)
+		}
+		if got, _ := errObj["hint"].(string); !strings.Contains(got, "config init") {
+			t.Errorf("error.hint = %q, must point at config init", got)
+		}
+	})
+}
+
+// decodeErrorEnvelope unmarshals a typed error envelope and returns its
+// top-level "error" object, failing the test if the shape is unexpected.
+func decodeErrorEnvelope(t *testing.T, raw []byte) map[string]any {
+	t.Helper()
+	var env map[string]any
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatalf("envelope is not valid JSON: %v\n%s", err, raw)
+	}
+	errObj, ok := env["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("envelope missing top-level error object: %s", raw)
+	}
+	return errObj
+}
+
+// TestHandleRootError_NoDeprecationTypesUsageError pins that a residual cobra
+// usage error (missing required flag) is typed as invalid_argument with exit 2
+// even with no deprecation pending — never cobra's plain "Error:" line.
+func TestHandleRootError_NoDeprecationTypesUsageError(t *testing.T) {
+	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", t.TempDir())
+	t.Cleanup(func() { deprecation.SetPending(nil) })
+	deprecation.SetPending(nil)
+
+	f, _, _, _ := cmdutil.TestFactory(t, nil)
+	errOut := &bytes.Buffer{}
+	f.IOStreams.ErrOut = errOut
+
+	exit := handleRootError(f, fmt.Errorf(`required flag(s) %q not set`, "values"))
+
+	out := errOut.String()
+	if strings.HasPrefix(strings.TrimSpace(out), "Error:") {
+		t.Fatalf("want a structured envelope, got a plain Error: line:\n%s", out)
+	}
+	errObj := decodeErrorEnvelope(t, errOut.Bytes())
+	if got := errObj["type"]; got != "validation" {
+		t.Errorf("error.type = %v, want %q", got, "validation")
+	}
+	if got, _ := errObj["message"].(string); !strings.Contains(got, "values") {
+		t.Errorf("error.message = %q, must carry the failing flag name", got)
+	}
+	if exit != int(output.ExitValidation) {
+		t.Errorf("exit = %d, want %d (validation envelope → category-derived exit)", exit, int(output.ExitValidation))
+	}
+}
+
+// TestHandleRootError_LeakedUntypedErrorBecomesInternal pins that an untyped
+// error that does NOT match a cobra usage shape (i.e. one that leaked past the
+// typed boundary from a helper) is classified as an internal fault (exit 5),
+// not blamed on the user's input as a validation error.
+func TestHandleRootError_LeakedUntypedErrorBecomesInternal(t *testing.T) {
+	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", t.TempDir())
+	t.Cleanup(func() { deprecation.SetPending(nil) })
+	deprecation.SetPending(nil)
+
+	f, _, _, _ := cmdutil.TestFactory(t, nil)
+	errOut := &bytes.Buffer{}
+	f.IOStreams.ErrOut = errOut
+
+	exit := handleRootError(f, fmt.Errorf("upstream helper exploded: %w", io.ErrUnexpectedEOF))
+
+	errObj := decodeErrorEnvelope(t, errOut.Bytes())
+	if got := errObj["type"]; got != "internal" {
+		t.Errorf("error.type = %v, want %q (leaked untyped error must not be mislabeled validation)", got, "internal")
+	}
+	if exit != int(output.ExitInternal) {
+		t.Errorf("exit = %d, want %d (internal envelope → category-derived exit)", exit, int(output.ExitInternal))
+	}
+}
+
+// TestHandleRootError_PartialWritePreservesExitCode pins that when the
+// stderr write fails mid-envelope, handleRootError still returns the typed
+// exit code (ExitAuth=3 for AuthenticationError), not fall through to the
+// plain "Error:" path with exit 1. ExitCodeOf is computed from the typed
+// err BEFORE the envelope write so the exit code is preserved even when
+// the consumer's stderr pipe dies.
+func TestHandleRootError_PartialWritePreservesExitCode(t *testing.T) {
+	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", t.TempDir())
+
+	f, _, _, _ := cmdutil.TestFactory(t, nil)
+	w := &failingWriter{limit: 20}
+	f.IOStreams.ErrOut = w
+
+	err := errs.NewAuthenticationError(errs.SubtypeTokenExpired, "token expired")
+	exit := handleRootError(f, err)
+	if exit != int(output.ExitAuth) {
+		t.Errorf("exit = %d, want %d (typed exit code preserved despite write failure)", exit, int(output.ExitAuth))
+	}
+}
+
+// TestHandleRootError_BareErrorExitCodeNoStderr pins the silent-exit
+// contract: a *output.BareError is honored for its exit code while stderr stays
+// empty (stdout already carries the result, so the dispatcher must not layer a
+// second envelope on top).
+func TestHandleRootError_BareErrorExitCodeNoStderr(t *testing.T) {
+	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", t.TempDir())
+
+	f, _, _, _ := cmdutil.TestFactory(t, nil)
+	errOut := &bytes.Buffer{}
+	f.IOStreams.ErrOut = errOut
+
+	exit := handleRootError(f, output.ErrBare(output.ExitAuth))
+	if exit != int(output.ExitAuth) {
+		t.Errorf("exit = %d, want %d (BareError code propagated)", exit, int(output.ExitAuth))
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("stderr must stay empty for a bare predicate signal, got:\n%s", errOut.String())
+	}
+}
+
+// TestHandleRootError_TypedAuthErrorWithLegacyCausePreserved pins that a typed
+// *errs.AuthenticationError carrying a legacy *NeedAuthorizationError in its
+// Cause chain renders the producer's TokenExpired subtype + custom hint
+// verbatim — the legacy sentinel in the Cause chain never coarsens the wire
+// shape.
+func TestHandleRootError_TypedAuthErrorWithLegacyCausePreserved(t *testing.T) {
+	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", t.TempDir())
+
+	f, _, _, _ := cmdutil.TestFactory(t, nil)
+	errOut := &bytes.Buffer{}
+	f.IOStreams.ErrOut = errOut
+
+	innerLegacy := &internalauth.NeedAuthorizationError{UserOpenId: "u_123"}
+	outer := errs.NewAuthenticationError(errs.SubtypeTokenExpired, "token expired").
+		WithHint("custom producer hint").
+		WithCause(innerLegacy)
+
+	exit := handleRootError(f, outer)
+	if exit != int(output.ExitAuth) {
+		t.Errorf("exit = %d, want %d (ExitAuth)", exit, int(output.ExitAuth))
+	}
+	got := errOut.String()
+	if !strings.Contains(got, `"subtype": "token_expired"`) {
+		t.Errorf("envelope lost producer Subtype TokenExpired; got %s", got)
+	}
+	if !strings.Contains(got, "custom producer hint") {
+		t.Errorf("envelope lost producer Hint; got %s", got)
 	}
 }
 

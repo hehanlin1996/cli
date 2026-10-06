@@ -6,6 +6,7 @@ package base
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/larksuite/cli/errs"
 	"github.com/larksuite/cli/internal/cmdutil"
 	"github.com/larksuite/cli/internal/core"
 	"github.com/larksuite/cli/internal/httpmock"
@@ -57,6 +59,26 @@ func newBaseTestRuntimeWithArrays(stringFlags map[string]string, stringArrayFlag
 		_ = cmd.Flags().Set(name, strconv.Itoa(value))
 	}
 	return &common.RuntimeContext{Cmd: cmd, Config: &core.CliConfig{UserOpenId: "ou_test"}}
+}
+
+func assertBasePaginationValidation(t *testing.T, err error, param string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected validation error, got nil")
+	}
+	var validationErr *errs.ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("expected validation error, got %T: %v", err, err)
+	}
+	if validationErr.Subtype != errs.SubtypeInvalidArgument {
+		t.Fatalf("subtype=%q, want %q", validationErr.Subtype, errs.SubtypeInvalidArgument)
+	}
+	if validationErr.Param != param {
+		t.Fatalf("param=%q, want %s", validationErr.Param, param)
+	}
+	if !strings.Contains(validationErr.Message, "must be between") {
+		t.Fatalf("message=%q, want range limit", validationErr.Message)
+	}
 }
 
 func TestBaseAction(t *testing.T) {
@@ -133,6 +155,7 @@ func TestViewSetVisibleFieldsValidateHook(t *testing.T) {
 func TestShortcutsCatalog(t *testing.T) {
 	shortcuts := Shortcuts()
 	want := []string{
+		"+base-block-list", "+base-block-create", "+base-block-move", "+base-block-rename", "+base-block-delete",
 		"+table-list", "+table-get", "+table-create", "+table-update", "+table-delete",
 		"+field-list", "+field-get", "+field-create", "+field-update", "+field-delete", "+field-search-options",
 		"+view-list", "+view-get", "+view-create", "+view-delete", "+view-get-filter", "+view-set-filter", "+view-get-visible-fields", "+view-set-visible-fields", "+view-get-group", "+view-set-group", "+view-get-sort", "+view-set-sort", "+view-get-timebar", "+view-set-timebar", "+view-get-card", "+view-set-card", "+view-rename",
@@ -146,7 +169,7 @@ func TestShortcutsCatalog(t *testing.T) {
 		"+form-questions-create", "+form-questions-delete", "+form-questions-update", "+form-questions-list",
 		"+form-submit",
 		"+dashboard-list", "+dashboard-get", "+dashboard-create", "+dashboard-update", "+dashboard-delete", "+dashboard-arrange",
-		"+dashboard-block-list", "+dashboard-block-get", "+dashboard-block-create", "+dashboard-block-update", "+dashboard-block-delete",
+		"+dashboard-block-list", "+dashboard-block-get", "+dashboard-block-get-data", "+dashboard-block-create", "+dashboard-block-update", "+dashboard-block-delete",
 	}
 	if len(shortcuts) != len(want) {
 		t.Fatalf("len(shortcuts)=%d want=%d", len(shortcuts), len(want))
@@ -188,12 +211,32 @@ func TestBaseDeleteShortcutsRisk(t *testing.T) {
 		BaseFormQuestionsDelete.Command:    BaseFormQuestionsDelete.Risk,
 		BaseDashboardDelete.Command:        BaseDashboardDelete.Risk,
 		BaseDashboardBlockDelete.Command:   BaseDashboardBlockDelete.Risk,
+		BaseBaseBlockDelete.Command:        BaseBaseBlockDelete.Risk,
 		BaseRoleDelete.Command:             BaseRoleDelete.Risk,
 	}
 
 	for command, risk := range cases {
 		if risk != "high-risk-write" {
 			t.Fatalf("command=%q risk=%q want=%q", command, risk, "high-risk-write")
+		}
+	}
+}
+
+func TestBaseHighRiskShortcutsTipsGuideAgents(t *testing.T) {
+	for _, shortcut := range Shortcuts() {
+		if shortcut.Risk != "high-risk-write" {
+			continue
+		}
+		parent := &cobra.Command{Use: "base"}
+		shortcut.Mount(parent, &cmdutil.Factory{})
+		cmd := parent.Commands()[0]
+		flag := cmd.Flags().Lookup("yes")
+		if flag == nil {
+			t.Fatalf("%s missing --yes flag", shortcut.Command)
+		}
+		tips := strings.Join(cmdutil.GetTips(cmd), "\n")
+		if !strings.Contains(tips, "pass --yes without asking again") {
+			t.Fatalf("%s tips missing agent guidance:\n%s", shortcut.Command, tips)
 		}
 	}
 }
@@ -222,6 +265,30 @@ func TestBaseFieldUpdateHelpHidesReadGuideFlag(t *testing.T) {
 	}
 }
 
+func TestBaseBlockMoveRejectsBeforeAndAfter(t *testing.T) {
+	runtime := newBaseTestRuntime(
+		map[string]string{"before-id": "blk_before", "after-id": "blk_after"},
+		nil,
+		nil,
+	)
+	err := validateBaseBlockMove(runtime)
+	if err == nil || !strings.Contains(err.Error(), "--before-id and --after-id are mutually exclusive") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestBaseBlockCreateAndRenameRequireName(t *testing.T) {
+	createRT := newBaseTestRuntime(map[string]string{"type": "folder", "name": "   "}, nil, nil)
+	if err := validateBaseBlockCreate(createRT); err == nil || !strings.Contains(err.Error(), "--name must not be blank") {
+		t.Fatalf("create err=%v", err)
+	}
+
+	renameRT := newBaseTestRuntime(map[string]string{"name": "   "}, nil, nil)
+	if err := validateBaseBlockRename(renameRT); err == nil || !strings.Contains(err.Error(), "--name must not be blank") {
+		t.Fatalf("rename err=%v", err)
+	}
+}
+
 func TestBaseRecordReadHelpGuidesAgents(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -235,36 +302,39 @@ func TestBaseRecordReadHelpGuidesAgents(t *testing.T) {
 			wantHelp: []string{
 				"field ID or name to include; repeat to project only needed fields",
 				"view ID or name; omit for reading all table records, or set to read a user-specified or temporary filtered/sorted view",
+				`filter JSON object or @file`,
+				`sort JSON array or @file`,
 				"pagination size, range 1-200",
 				"output format: markdown (default) | json",
 			},
 			wantTips: []string{
 				"lark-cli base +record-list --base-token <base_token> --table-id <table_id> --limit 50",
 				"lark-cli base +record-list --base-token <base_token> --table-id <table_id> --field-id Name --field-id Status --limit 50",
+				"Text equality filter",
+				"Option intersection filter",
+				"Query priority",
 				"Default output is markdown",
 				"Use --field-id repeatedly to keep output small",
-				"Use --view-id when the user asks for a specific view or after creating a temporary filtered/sorted view",
-				"lark-base record read SOP",
 			},
 		},
 		{
 			name:     "record search",
 			shortcut: BaseRecordSearch,
 			wantHelp: []string{
-				"requires keyword/search_fields",
-				"optional select_fields/view_id/offset/limit",
+				`record search JSON object for the full request body, e.g. {"keyword":"Alice","search_fields":["Name"],"select_fields":["Name","Status"],"filter":{"logic":"and","conditions":[]},"sort":[{"field":"Updated","desc":true}],"limit":50}; escape hatch for advanced cases`,
+				"keyword for record search",
+				"field ID or name to search",
+				`filter JSON object or @file`,
+				`sort JSON array or @file`,
 				"output format: markdown (default) | json",
 			},
 			wantTips: []string{
-				`lark-cli base +record-search --base-token <base_token> --table-id <table_id> --json`,
-				`"select_fields":["Name","Status"]`,
-				`JSON shape: {"keyword":"<text>","search_fields":["<field_id_or_name>"]`,
-				"search_fields length 1-20",
-				"limit range 1-200 defaults to 10",
-				"view_id scopes search to records in that view",
+				"Example: lark-cli base +record-search",
+				"Example with filter/sort JSON",
+				"Text equality filter",
+				"Query priority",
+				"Use --json only when you need to pass the full search body directly",
 				"Default output is markdown",
-				"only for keyword search",
-				"lark-base record read SOP",
 			},
 		},
 		{
@@ -311,6 +381,561 @@ func TestBaseRecordReadHelpGuidesAgents(t *testing.T) {
 	}
 }
 
+func TestBasePaginationHelpShowsDefaults(t *testing.T) {
+	tests := []struct {
+		name       string
+		shortcut   common.Shortcut
+		flag       string
+		defaultVal string
+		help       string
+	}{
+		{name: "table list", shortcut: BaseTableList, flag: "limit", defaultVal: "50", help: "pagination size, range 1-100"},
+		{name: "field list", shortcut: BaseFieldList, flag: "limit", defaultVal: "100", help: "pagination size, range 1-200"},
+		{name: "field search options", shortcut: BaseFieldSearchOptions, flag: "limit", defaultVal: "30", help: "pagination size, range 1-200"},
+		{name: "record list", shortcut: BaseRecordList, flag: "limit", defaultVal: "100", help: "pagination size, range 1-200"},
+		{name: "record search", shortcut: BaseRecordSearch, flag: "limit", defaultVal: "10", help: "pagination size, range 1-200"},
+		{name: "view list", shortcut: BaseViewList, flag: "limit", defaultVal: "100", help: "pagination size, range 1-200"},
+		{name: "form list", shortcut: BaseFormsList, flag: "page-size", defaultVal: "100", help: "page size per request, range 1-100"},
+		{name: "workflow list", shortcut: BaseWorkflowList, flag: "page-size", defaultVal: "100", help: "page size per request, range 1-100"},
+		{name: "record history list", shortcut: BaseRecordHistoryList, flag: "page-size", defaultVal: "30", help: "pagination size, range 1-50"},
+		{name: "dashboard list", shortcut: BaseDashboardList, flag: "page-size", defaultVal: "100", help: "page size, range 1-100"},
+		{name: "dashboard block list", shortcut: BaseDashboardBlockList, flag: "page-size", defaultVal: "20", help: "page size, range 1-100"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parent := &cobra.Command{Use: "base"}
+			tt.shortcut.Mount(parent, &cmdutil.Factory{})
+			cmd := parent.Commands()[0]
+			flag := cmd.Flags().Lookup(tt.flag)
+			if flag == nil {
+				t.Fatalf("flag --%s missing", tt.flag)
+			}
+			if flag.DefValue != tt.defaultVal {
+				t.Fatalf("--%s default=%q, want %q", tt.flag, flag.DefValue, tt.defaultVal)
+			}
+			help := cmd.Flags().FlagUsages()
+			if !strings.Contains(help, tt.help) {
+				t.Fatalf("flag help missing %q:\n%s", tt.help, help)
+			}
+			if !strings.Contains(help, "default "+tt.defaultVal) {
+				t.Fatalf("flag help missing default %s:\n%s", tt.defaultVal, help)
+			}
+			if got := strings.Count(help, "default "+tt.defaultVal); got != 1 {
+				t.Fatalf("flag help default %s count=%d, want 1:\n%s", tt.defaultVal, got, help)
+			}
+		})
+	}
+}
+
+func TestBaseLimitPageSizeAliasIsHidden(t *testing.T) {
+	tests := []struct {
+		name     string
+		shortcut common.Shortcut
+	}{
+		{name: "table list", shortcut: BaseTableList},
+		{name: "field list", shortcut: BaseFieldList},
+		{name: "field search options", shortcut: BaseFieldSearchOptions},
+		{name: "record list", shortcut: BaseRecordList},
+		{name: "record search", shortcut: BaseRecordSearch},
+		{name: "view list", shortcut: BaseViewList},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parent := &cobra.Command{Use: "base"}
+			tt.shortcut.Mount(parent, &cmdutil.Factory{})
+			cmd := parent.Commands()[0]
+			flag := cmd.Flags().Lookup("page-size")
+			if flag == nil {
+				t.Fatal("flag --page-size missing")
+			}
+			if !flag.Hidden {
+				t.Fatal("flag --page-size must be hidden")
+			}
+			if strings.Contains(cmd.Flags().FlagUsages(), "--page-size") {
+				t.Fatalf("help should not include hidden --page-size:\n%s", cmd.Flags().FlagUsages())
+			}
+		})
+	}
+}
+
+func TestBaseDashboardHelpGuidesAgents(t *testing.T) {
+	tests := []struct {
+		name     string
+		shortcut common.Shortcut
+		wantTips []string
+	}{
+		{
+			name:     "dashboard list",
+			shortcut: BaseDashboardList,
+			wantTips: []string{
+				"Use returned dashboard_id values",
+			},
+		},
+		{
+			name:     "dashboard get",
+			shortcut: BaseDashboardGet,
+			wantTips: []string{
+				"block-level details",
+			},
+		},
+		{
+			name:     "dashboard create",
+			shortcut: BaseDashboardCreate,
+			wantTips: []string{
+				"Record the returned dashboard_id",
+			},
+		},
+		{
+			name:     "dashboard update",
+			shortcut: BaseDashboardUpdate,
+			wantTips: []string{},
+		},
+		{
+			name:     "dashboard delete",
+			shortcut: BaseDashboardDelete,
+			wantTips: []string{
+				"lark-cli base +dashboard-delete --base-token <base_token> --dashboard-id <dashboard_id> --yes",
+				"also deletes its blocks",
+				"pass --yes",
+			},
+		},
+		{
+			name:     "dashboard arrange",
+			shortcut: BaseDashboardArrange,
+			wantTips: []string{
+				"not deterministic or position-specific",
+			},
+		},
+		{
+			name:     "dashboard block list",
+			shortcut: BaseDashboardBlockList,
+			wantTips: []string{
+				"lark-cli base +dashboard-block-list --base-token <base_token> --dashboard-id <dashboard_id>",
+				"Use returned block_id and type values",
+			},
+		},
+		{
+			name:     "dashboard block get",
+			shortcut: BaseDashboardBlockGet,
+			wantTips: []string{
+				"lark-cli base +dashboard-block-get --base-token <base_token> --dashboard-id <dashboard_id> --block-id <block_id>",
+				"metadata such as name, type, layout, and data_config",
+				"computed chart result",
+			},
+		},
+		{
+			name:     "dashboard block get data",
+			shortcut: BaseDashboardBlockGetData,
+			wantTips: []string{
+				"lark-cli base +dashboard-block-get-data --base-token <base_token> --block-id <block_id>",
+				"does not need --dashboard-id",
+				"computed chart protocol JSON",
+			},
+		},
+		{
+			name:     "dashboard block create",
+			shortcut: BaseDashboardBlockCreate,
+			wantTips: []string{
+				`lark-cli base +dashboard-block-create --base-token <base_token> --dashboard-id <dashboard_id> --name "Order Count" --type statistics --data-config '{"table_name":"Orders","count_all":true}'`,
+				`--type text --data-config '{"text":"# Sales Dashboard"}'`,
+				"+table-list and +field-list",
+				"not table_id or field_id",
+				"dashboard-block-data-config.md as the SSOT",
+				"do not invent data_config from natural language",
+				"sequentially",
+			},
+		},
+		{
+			name:     "dashboard block update",
+			shortcut: BaseDashboardBlockUpdate,
+			wantTips: []string{
+				`lark-cli base +dashboard-block-update --base-token <base_token> --dashboard-id <dashboard_id> --block-id <block_id> --name "Total Sales"`,
+				`--data-config '{"series":[{"field_name":"Amount","rollup":"SUM"}]}'`,
+				"dashboard-block-data-config.md as the SSOT",
+				"do not invent data_config from natural language",
+				"Block type cannot be changed",
+				"top-level keys",
+			},
+		},
+		{
+			name:     "dashboard block delete",
+			shortcut: BaseDashboardBlockDelete,
+			wantTips: []string{
+				"lark-cli base +dashboard-block-delete --base-token <base_token> --dashboard-id <dashboard_id> --block-id <block_id> --yes",
+				"pass --yes",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parent := &cobra.Command{Use: "base"}
+			tt.shortcut.Mount(parent, &cmdutil.Factory{})
+			cmd := parent.Commands()[0]
+
+			tips := strings.Join(cmdutil.GetTips(cmd), "\n")
+			for _, want := range tt.wantTips {
+				if !strings.Contains(tips, want) {
+					t.Fatalf("tips missing %q:\n%s", want, tips)
+				}
+			}
+		})
+	}
+}
+
+func TestBaseWorkflowHelpGuidesAgents(t *testing.T) {
+	tests := []struct {
+		name     string
+		shortcut common.Shortcut
+		wantTips []string
+	}{
+		{
+			name:     "workflow list",
+			shortcut: BaseWorkflowList,
+			wantTips: []string{
+				"workflow_id values with wkf prefix",
+				"auto-paginates",
+			},
+		},
+		{
+			name:     "workflow get",
+			shortcut: BaseWorkflowGet,
+			wantTips: []string{
+				"workflow-id must start with wkf",
+				"steps may be an empty array",
+				"Use +workflow-get before +workflow-update",
+				"lark-base-workflow-schema.md",
+			},
+		},
+		{
+			name:     "workflow create",
+			shortcut: BaseWorkflowCreate,
+			wantTips: []string{
+				"lark-cli base +workflow-create --base-token <base_token> --json @workflow.json",
+				"client_token is required",
+				"New workflows are created disabled",
+				"+table-list and +field-list",
+				"Step ids must be unique",
+				"lark-base-workflow-guide.md as the entry guide",
+				"lark-base-workflow-schema.md as the steps JSON SSOT",
+				"do not invent steps[].type/data/next/children from natural language",
+			},
+		},
+		{
+			name:     "workflow update",
+			shortcut: BaseWorkflowUpdate,
+			wantTips: []string{
+				"lark-cli base +workflow-update --base-token <base_token> --workflow-id <workflow_id> --json @workflow.json",
+				"PUT uses full replacement semantics",
+				"Use +workflow-get first",
+				"keep title/status/steps fields",
+				"workflow-id must start with wkf",
+				"Updating does not enable or disable",
+				"do not invent steps[].type/data/next/children from natural language",
+			},
+		},
+		{
+			name:     "workflow enable",
+			shortcut: BaseWorkflowEnable,
+			wantTips: []string{
+				"workflow-id must start with wkf",
+				"does not modify steps",
+				"New workflows are created disabled",
+			},
+		},
+		{
+			name:     "workflow disable",
+			shortcut: BaseWorkflowDisable,
+			wantTips: []string{
+				"workflow-id must start with wkf",
+				"does not delete the workflow or its steps",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parent := &cobra.Command{Use: "base"}
+			tt.shortcut.Mount(parent, &cmdutil.Factory{})
+			cmd := parent.Commands()[0]
+
+			tips := strings.Join(cmdutil.GetTips(cmd), "\n")
+			for _, want := range tt.wantTips {
+				if !strings.Contains(tips, want) {
+					t.Fatalf("tips missing %q:\n%s", want, tips)
+				}
+			}
+		})
+	}
+}
+
+func TestBaseJSONExamplesLiveInFlagDescriptions(t *testing.T) {
+	tests := []struct {
+		name     string
+		shortcut common.Shortcut
+		wantHelp []string
+	}{
+		{
+			name:     "base create fields",
+			shortcut: BaseBaseCreate,
+			wantHelp: []string{
+				`field JSON array for the first table schema; use with --table-name`,
+				`first table name for the custom first table schema; use with --fields`,
+			},
+		},
+		{
+			name:     "table create fields",
+			shortcut: BaseTableCreate,
+			wantHelp: []string{
+				`field JSON array for create, e.g. [{"name":"Title","type":"text"}`,
+			},
+		},
+		{
+			name:     "view set filter",
+			shortcut: BaseViewSetFilter,
+			wantHelp: []string{
+				`filter JSON object, e.g. {"logic":"and","conditions":[["Status","==","Todo"]]}`,
+			},
+		},
+		{
+			name:     "view set sort",
+			shortcut: BaseViewSetSort,
+			wantHelp: []string{
+				`sort_config JSON object, e.g. {"sort_config":[{"field":"Priority","desc":true}]}`,
+				`use {"sort_config":[]} to clear`,
+			},
+		},
+		{
+			name:     "view set group",
+			shortcut: BaseViewSetGroup,
+			wantHelp: []string{
+				`group JSON object with group_config array, e.g. {"group_config":[{"field":"Status","desc":false}]}`,
+			},
+		},
+		{
+			name:     "view set card",
+			shortcut: BaseViewSetCard,
+			wantHelp: []string{
+				`card JSON object, e.g. {"cover_field":"Cover"} or {"cover_field":null} to clear`,
+			},
+		},
+		{
+			name:     "view set timebar",
+			shortcut: BaseViewSetTimebar,
+			wantHelp: []string{
+				`timebar JSON object with start_time, end_time, title, e.g. {"start_time":"Start Date","end_time":"End Date","title":"Name"}`,
+			},
+		},
+		{
+			name:     "view set visible fields",
+			shortcut: BaseViewSetVisibleFields,
+			wantHelp: []string{
+				`visible fields JSON object, e.g. {"visible_fields":["Name","Status"]}`,
+			},
+		},
+		{
+			name:     "form question delete",
+			shortcut: BaseFormQuestionsDelete,
+			wantHelp: []string{
+				`JSON array of question IDs to delete, max 10 items, e.g. '["q_001","q_002"]'`,
+			},
+		},
+		{
+			name:     "record search json",
+			shortcut: BaseRecordSearch,
+			wantHelp: []string{
+				`record search JSON object for the full request body, e.g. {"keyword":"Alice","search_fields":["Name"],"select_fields":["Name","Status"],"filter":{"logic":"and","conditions":[]},"sort":[{"field":"Updated","desc":true}],"limit":50}; escape hatch for advanced cases`,
+			},
+		},
+		{
+			name:     "record upsert json",
+			shortcut: BaseRecordUpsert,
+			wantHelp: []string{
+				`record field map JSON object, e.g. {"Name":"Alice","Status":"Todo"}; do not wrap in fields`,
+			},
+		},
+		{
+			name:     "record batch create json",
+			shortcut: BaseRecordBatchCreate,
+			wantHelp: []string{
+				`batch create JSON object, e.g. {"fields":["Name","Status"],"rows":[["Task A","Todo"],["Task B",null]]}; rows follow fields order`,
+			},
+		},
+		{
+			name:     "record batch update json",
+			shortcut: BaseRecordBatchUpdate,
+			wantHelp: []string{
+				`batch update JSON object, e.g. {"record_id_list":["rec_xxx"],"patch":{"Status":"Done"}}; same patch applies to all records`,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parent := &cobra.Command{Use: "base"}
+			tt.shortcut.Mount(parent, &cmdutil.Factory{})
+			cmd := parent.Commands()[0]
+
+			help := cmd.Flags().FlagUsages()
+			for _, want := range tt.wantHelp {
+				if !strings.Contains(help, want) {
+					t.Fatalf("flag help missing %q:\n%s", want, help)
+				}
+			}
+		})
+	}
+}
+
+func TestBaseRecordWriteHelpGuidesAgents(t *testing.T) {
+	tests := []struct {
+		name     string
+		shortcut common.Shortcut
+		wantTips []string
+	}{
+		{
+			name:     "record upsert",
+			shortcut: BaseRecordUpsert,
+			wantTips: []string{
+				"Happy path JSON is a top-level field map",
+				"Without --record-id this creates a record",
+				"does not auto-upsert by business key",
+				"use +field-list to confirm real writable fields",
+				"do not write system fields, formula, lookup, or attachment fields",
+				"CellValue happy path: text/phone/url",
+				"select -> \"Todo\"",
+				"multi-select -> [\"Tag A\",\"Tag B\"]",
+				"datetime -> \"2026-03-24 10:00:00\"",
+				"checkbox -> true/false",
+				`ID-based CellValue: user/group/link fields use arrays like [{"id":"ou_xxx"}]`,
+				`location uses {"lng":116.397428,"lat":39.90923}`,
+				"Do not guess user/chat/linked-record IDs or location coordinates",
+				"lark-base-cell-value.md",
+				"do not invent values for fields not covered by the happy path",
+			},
+		},
+		{
+			name:     "record batch create",
+			shortcut: BaseRecordBatchCreate,
+			wantTips: []string{
+				"Happy path fields: fields is the column order",
+				"rows is an array of row arrays",
+				"may use null for empty cells",
+				"use +field-list to confirm real writable fields",
+				"Batch create supports max 200 rows per call",
+				"CellValue happy path: text/phone/url",
+				`ID-based CellValue: user/group/link fields use arrays like [{"id":"ou_xxx"}]`,
+				"lark-base-cell-value.md",
+				"do not invent values for fields not covered by the happy path",
+			},
+		},
+		{
+			name:     "record batch update",
+			shortcut: BaseRecordBatchUpdate,
+			wantTips: []string{
+				"Happy path fields: record_id_list is the target record IDs",
+				"patch is a field map applied unchanged to every target record",
+				"Do not use +record-batch-update for per-row different values",
+				"use +field-list to confirm real writable fields",
+				"Batch update supports max 200 records per call",
+				"CellValue happy path: text/phone/url",
+				`ID-based CellValue: user/group/link fields use arrays like [{"id":"ou_xxx"}]`,
+				"lark-base-cell-value.md",
+				"do not invent values for fields not covered by the happy path",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parent := &cobra.Command{Use: "base"}
+			tt.shortcut.Mount(parent, &cmdutil.Factory{})
+			cmd := parent.Commands()[0]
+
+			tips := strings.Join(cmdutil.GetTips(cmd), "\n")
+			for _, want := range tt.wantTips {
+				if !strings.Contains(tips, want) {
+					t.Fatalf("tips missing %q:\n%s", want, tips)
+				}
+			}
+		})
+	}
+}
+
+func TestBaseBlockHelpGuidesAgents(t *testing.T) {
+	tests := []struct {
+		name     string
+		shortcut common.Shortcut
+		wantTips []string
+	}{
+		{
+			name:     "list",
+			shortcut: BaseBaseBlockList,
+			wantTips: []string{
+				"lark-cli base +base-block-list --base-token <base_token>",
+				"lark-cli base +base-block-list --base-token <base_token> --type table",
+				"lark-cli base +base-block-list --base-token <base_token> --parent-id <folder_block_id>",
+				`jq '.blocks[] | {type, name, block_id: .id, parent_id}'`,
+				`--type docx | jq '.blocks[] | {name, docx_token}'`,
+				"returned id is the table-id, dashboard-id, or workflow-id",
+				"For docx blocks, use the returned docx_token with docx commands.",
+			},
+		},
+		{
+			name:     "create",
+			shortcut: BaseBaseBlockCreate,
+			wantTips: []string{
+				`lark-cli base +base-block-create --base-token <base_token> --type folder --name "Project Docs"`,
+				`lark-cli base +base-block-create --base-token <base_token> --type table --name "Tasks"`,
+				`lark-cli base +base-block-create --base-token <base_token> --type docx --name "Spec" --parent-id <folder_block_id>`,
+				`lark-cli base +base-block-create --base-token <base_token> --type dashboard --name "Metrics"`,
+				`lark-cli base +base-block-create --base-token <base_token> --type workflow --name "Approval Flow"`,
+			},
+		},
+		{
+			name:     "move",
+			shortcut: BaseBaseBlockMove,
+			wantTips: []string{
+				"lark-cli base +base-block-move --base-token <base_token> --block-id <block_id> --parent-id <folder_block_id>",
+				"lark-cli base +base-block-move --base-token <base_token> --block-id <block_id> --after-id <sibling_block_id>",
+				"lark-cli base +base-block-move --base-token <base_token> --block-id <block_id> --before-id <sibling_block_id>",
+				"lark-cli base +base-block-move --base-token <base_token> --block-id <block_id>",
+			},
+		},
+		{
+			name:     "rename",
+			shortcut: BaseBaseBlockRename,
+			wantTips: []string{
+				`lark-cli base +base-block-rename --base-token <base_token> --block-id <block_id> --name "New name"`,
+			},
+		},
+		{
+			name:     "delete",
+			shortcut: BaseBaseBlockDelete,
+			wantTips: []string{
+				"lark-cli base +base-block-delete --base-token <base_token> --block-id <block_id> --yes",
+				"Recursive folder deletion is not supported.",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parent := &cobra.Command{Use: "base"}
+			tt.shortcut.Mount(parent, &cmdutil.Factory{})
+			cmd := parent.Commands()[0]
+
+			tips := strings.Join(cmdutil.GetTips(cmd), "\n")
+			for _, want := range tt.wantTips {
+				if !strings.Contains(tips, want) {
+					t.Fatalf("tips missing %q:\n%s", want, tips)
+				}
+			}
+		})
+	}
+}
+
 func TestBaseFieldUpdateHelpGuidesAgents(t *testing.T) {
 	parent := &cobra.Command{Use: "base"}
 	BaseFieldUpdate.Mount(parent, &cmdutil.Factory{})
@@ -328,7 +953,7 @@ func TestBaseFieldUpdateHelpGuidesAgents(t *testing.T) {
 
 	tips := strings.Join(cmdutil.GetTips(cmd), "\n")
 	wantTips := []string{
-		`lark-cli base +field-update --base-token <base_token> --table-id <table_id> --field-id <field_id> --json '{"name":"Status","type":"text"}'`,
+		`lark-cli base +field-update --base-token <base_token> --table-id <table_id> --field-id "Status" --json '{"name":"Status","type":"text"}' --yes`,
 		`"type":"select","multiple":false,"options":[{"name":"Todo"},{"name":"Done"}]`,
 		"full field-definition PUT semantics",
 		"Read the current field first with +field-get",
@@ -470,13 +1095,57 @@ func TestBaseTableValidate(t *testing.T) {
 	}
 }
 
+func TestBaseCreateValidate(t *testing.T) {
+	ctx := context.Background()
+	if err := BaseBaseCreate.Validate(ctx, newBaseTestRuntime(map[string]string{"name": "Demo", "table-name": "Tasks"}, nil, nil)); err != nil {
+		t.Fatalf("table-name-only should be valid, err=%v", err)
+	}
+	if err := BaseBaseCreate.Validate(ctx, newBaseTestRuntime(map[string]string{"name": "Demo", "table-name": "Tasks", "fields": `[{"name":"Title","type":"text"}]`}, nil, nil)); err != nil {
+		t.Fatalf("create validate err=%v", err)
+	}
+}
+
+func TestBaseCreateTipsGuideFieldSchema(t *testing.T) {
+	parent := &cobra.Command{Use: "base"}
+	BaseBaseCreate.Mount(parent, &cmdutil.Factory{})
+	cmd := parent.Commands()[0]
+
+	tips := strings.Join(cmdutil.GetTips(cmd), "\n")
+	for _, want := range []string{
+		"Before using --fields, read lark-base-field-json.md",
+		"do not invent field properties",
+	} {
+		if !strings.Contains(tips, want) {
+			t.Fatalf("tips missing %q:\n%s", want, tips)
+		}
+	}
+}
+
+func TestBaseCreateScopesCoverFollowUpTableOperations(t *testing.T) {
+	requiredUserScopes := []string{
+		"base:app:create",
+		"base:table:read",
+		"base:table:create",
+		"base:table:update",
+		"base:table:delete",
+	}
+	if !reflect.DeepEqual(BaseBaseCreate.UserScopes, requiredUserScopes) {
+		t.Fatalf("UserScopes=%v want=%v", BaseBaseCreate.UserScopes, requiredUserScopes)
+	}
+
+	requiredBotScopes := append(append([]string{}, requiredUserScopes...), "docs:permission.member:create")
+	if !reflect.DeepEqual(BaseBaseCreate.BotScopes, requiredBotScopes) {
+		t.Fatalf("BotScopes=%v want=%v", BaseBaseCreate.BotScopes, requiredBotScopes)
+	}
+}
+
 func TestBaseRecordValidate(t *testing.T) {
 	ctx := context.Background()
-	if BaseRecordList.Validate != nil {
-		t.Fatalf("record list validate should be nil for repeatable --field-id")
+	if BaseRecordList.Validate == nil {
+		t.Fatalf("record list validate should reject invalid query flags before dry-run")
 	}
 	if BaseRecordSearch.Validate == nil {
-		t.Fatalf("record search validate should reject invalid JSON before dry-run")
+		t.Fatalf("record search validate should reject invalid JSON/query flags before dry-run")
 	}
 	if BaseRecordGet.Validate == nil {
 		t.Fatalf("record get validate should reject invalid record selection before dry-run")
@@ -486,6 +1155,236 @@ func TestBaseRecordValidate(t *testing.T) {
 	}
 	if err := BaseRecordUpsert.Validate(ctx, newBaseTestRuntime(map[string]string{"base-token": "b", "table-id": "tbl_1", "json": `{"Name":"Alice"}`}, nil, nil)); err != nil {
 		t.Fatalf("record upsert map validate err=%v", err)
+	}
+	if err := BaseRecordList.Validate(ctx, newBaseTestRuntime(
+		map[string]string{"base-token": "b", "table-id": "tbl_1", "filter-json": `{"logic":"and","conditions":[["Status","==","Todo"]]}`},
+		nil,
+		nil,
+	)); err != nil {
+		t.Fatalf("record list filter-json validate err=%v", err)
+	}
+	if err := BaseRecordList.Validate(ctx, newBaseTestRuntime(
+		map[string]string{"base-token": "b", "table-id": "tbl_1", "filter-json": `[["Status","==","Todo"]]`},
+		nil,
+		nil,
+	)); err == nil || !strings.Contains(err.Error(), "--filter-json must be a JSON object") {
+		t.Fatalf("err=%v", err)
+	}
+	if err := BaseRecordList.Validate(ctx, newBaseTestRuntimeWithArrays(
+		map[string]string{"base-token": "b", "table-id": "tbl_1", "sort-json": `[{"field":"F1"},{"field":"F2"},{"field":"F3"},{"field":"F4"},{"field":"F5"},{"field":"F6"},{"field":"F7"},{"field":"F8"},{"field":"F9"},{"field":"F10"},{"field":"F11"}]`},
+		nil,
+		nil,
+		nil,
+	)); err == nil || !strings.Contains(err.Error(), "sort supports at most 10 sort conditions") {
+		t.Fatalf("err=%v", err)
+	}
+	if err := BaseRecordSearch.Validate(ctx, newBaseTestRuntime(map[string]string{"base-token": "b", "table-id": "tbl_1"}, nil, nil)); err == nil || !strings.Contains(err.Error(), "--keyword is required unless --json is used") {
+		t.Fatalf("err=%v", err)
+	}
+	if err := BaseRecordSearch.Validate(ctx, newBaseTestRuntimeWithArrays(
+		map[string]string{"base-token": "b", "table-id": "tbl_1", "keyword": "Alice"},
+		map[string][]string{"search-field": {"Name"}},
+		nil,
+		nil,
+	)); err != nil {
+		t.Fatalf("record search flag validate err=%v", err)
+	}
+	if err := BaseRecordSearch.Validate(ctx, newBaseTestRuntime(
+		map[string]string{
+			"base-token": "b",
+			"table-id":   "tbl_1",
+			"json":       `{"keyword":"Alice","search_fields":["Name"],"sort":{"sort_config":[{"field":"Updated","desc":true}]}}`,
+			"sort-json":  `[{"field":"Title","desc":false}]`,
+		},
+		nil,
+		nil,
+	)); err != nil {
+		t.Fatalf("record search json with sort-json validate err=%v", err)
+	}
+	if err := BaseRecordSearch.Validate(ctx, newBaseTestRuntime(
+		map[string]string{"base-token": "b", "table-id": "tbl_1", "json": `{"keyword":"Alice","search_fields":["Name"]}`, "keyword": "Bob"},
+		nil,
+		nil,
+	)); err == nil || !strings.Contains(err.Error(), "--json is mutually exclusive") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestBasePaginationValidationRejectsOutOfRange(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name     string
+		shortcut common.Shortcut
+		runtime  *common.RuntimeContext
+		param    string
+	}{
+		{
+			name:     "table list",
+			shortcut: BaseTableList,
+			runtime:  newBaseTestRuntime(map[string]string{"base-token": "b"}, nil, map[string]int{"limit": 101}),
+			param:    "--limit",
+		},
+		{
+			name:     "field list",
+			shortcut: BaseFieldList,
+			runtime:  newBaseTestRuntime(map[string]string{"base-token": "b", "table-id": "tbl_1"}, nil, map[string]int{"limit": 201}),
+			param:    "--limit",
+		},
+		{
+			name:     "field search options",
+			shortcut: BaseFieldSearchOptions,
+			runtime:  newBaseTestRuntime(map[string]string{"base-token": "b", "table-id": "tbl_1", "field-id": "fld_1"}, nil, map[string]int{"limit": 201}),
+			param:    "--limit",
+		},
+		{
+			name:     "view list",
+			shortcut: BaseViewList,
+			runtime:  newBaseTestRuntime(map[string]string{"base-token": "b", "table-id": "tbl_1"}, nil, map[string]int{"limit": 201}),
+			param:    "--limit",
+		},
+		{
+			name:     "record list",
+			shortcut: BaseRecordList,
+			runtime:  newBaseTestRuntime(map[string]string{"base-token": "b", "table-id": "tbl_1"}, nil, map[string]int{"limit": 0}),
+			param:    "--limit",
+		},
+		{
+			name:     "record search",
+			shortcut: BaseRecordSearch,
+			runtime: newBaseTestRuntimeWithArrays(
+				map[string]string{"base-token": "b", "table-id": "tbl_1", "keyword": "Alice"},
+				map[string][]string{"search-field": {"Name"}},
+				nil,
+				map[string]int{"limit": 201},
+			),
+			param: "--limit",
+		},
+		{
+			name:     "table list page-size alias",
+			shortcut: BaseTableList,
+			runtime:  newBaseTestRuntime(map[string]string{"base-token": "b"}, nil, map[string]int{"page-size": 101}),
+			param:    "--page-size",
+		},
+		{
+			name:     "field list page-size alias",
+			shortcut: BaseFieldList,
+			runtime:  newBaseTestRuntime(map[string]string{"base-token": "b", "table-id": "tbl_1"}, nil, map[string]int{"page-size": 201}),
+			param:    "--page-size",
+		},
+		{
+			name:     "field search options page-size alias",
+			shortcut: BaseFieldSearchOptions,
+			runtime:  newBaseTestRuntime(map[string]string{"base-token": "b", "table-id": "tbl_1", "field-id": "fld_1"}, nil, map[string]int{"page-size": 201}),
+			param:    "--page-size",
+		},
+		{
+			name:     "view list page-size alias",
+			shortcut: BaseViewList,
+			runtime:  newBaseTestRuntime(map[string]string{"base-token": "b", "table-id": "tbl_1"}, nil, map[string]int{"page-size": 201}),
+			param:    "--page-size",
+		},
+		{
+			name:     "record list page-size alias",
+			shortcut: BaseRecordList,
+			runtime:  newBaseTestRuntime(map[string]string{"base-token": "b", "table-id": "tbl_1"}, nil, map[string]int{"page-size": 0}),
+			param:    "--page-size",
+		},
+		{
+			name:     "record search page-size alias",
+			shortcut: BaseRecordSearch,
+			runtime: newBaseTestRuntimeWithArrays(
+				map[string]string{"base-token": "b", "table-id": "tbl_1", "keyword": "Alice"},
+				map[string][]string{"search-field": {"Name"}},
+				nil,
+				map[string]int{"page-size": 201},
+			),
+			param: "--page-size",
+		},
+		{
+			name:     "form list",
+			shortcut: BaseFormsList,
+			runtime:  newBaseTestRuntime(map[string]string{"base-token": "b", "table-id": "tbl_1"}, nil, map[string]int{"page-size": 101}),
+			param:    "--page-size",
+		},
+		{
+			name:     "workflow list",
+			shortcut: BaseWorkflowList,
+			runtime:  newBaseTestRuntime(map[string]string{"base-token": "b"}, nil, map[string]int{"page-size": 101}),
+			param:    "--page-size",
+		},
+		{
+			name:     "record history list",
+			shortcut: BaseRecordHistoryList,
+			runtime:  newBaseTestRuntime(map[string]string{"base-token": "b", "table-id": "tbl_1", "record-id": "rec_1"}, nil, map[string]int{"page-size": 51}),
+			param:    "--page-size",
+		},
+		{
+			name:     "dashboard list",
+			shortcut: BaseDashboardList,
+			runtime:  newBaseTestRuntime(map[string]string{"base-token": "b", "page-size": "101"}, nil, nil),
+			param:    "--page-size",
+		},
+		{
+			name:     "dashboard block list",
+			shortcut: BaseDashboardBlockList,
+			runtime:  newBaseTestRuntime(map[string]string{"base-token": "b", "dashboard-id": "dash_1", "page-size": "101"}, nil, nil),
+			param:    "--page-size",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.shortcut.Validate == nil {
+				t.Fatalf("%s missing Validate", tt.shortcut.Command)
+			}
+			assertBasePaginationValidation(t, tt.shortcut.Validate(ctx, tt.runtime), tt.param)
+		})
+	}
+}
+
+func TestBaseLimitPageSizeAliasRejectsConflict(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name     string
+		shortcut common.Shortcut
+		runtime  *common.RuntimeContext
+	}{
+		{
+			name:     "table list",
+			shortcut: BaseTableList,
+			runtime:  newBaseTestRuntime(map[string]string{"base-token": "b"}, nil, map[string]int{"limit": 50, "page-size": 50}),
+		},
+		{
+			name:     "record search",
+			shortcut: BaseRecordSearch,
+			runtime: newBaseTestRuntimeWithArrays(
+				map[string]string{"base-token": "b", "table-id": "tbl_1", "keyword": "Alice"},
+				map[string][]string{"search-field": {"Name"}},
+				nil,
+				map[string]int{"limit": 10, "page-size": 10},
+			),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.shortcut.Validate == nil {
+				t.Fatalf("%s missing Validate", tt.shortcut.Command)
+			}
+			err := tt.shortcut.Validate(ctx, tt.runtime)
+			if err == nil {
+				t.Fatal("expected validation error, got nil")
+			}
+			var validationErr *errs.ValidationError
+			if !errors.As(err, &validationErr) {
+				t.Fatalf("expected validation error, got %T: %v", err, err)
+			}
+			if validationErr.Param != "--page-size" {
+				t.Fatalf("param=%q, want --page-size", validationErr.Param)
+			}
+			if !strings.Contains(validationErr.Message, "mutually exclusive") {
+				t.Fatalf("message=%q, want mutually exclusive", validationErr.Message)
+			}
+		})
 	}
 }
 

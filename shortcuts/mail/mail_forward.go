@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/larksuite/cli/internal/output"
+	"github.com/larksuite/cli/errs"
 	"github.com/larksuite/cli/shortcuts/common"
 	draftpkg "github.com/larksuite/cli/shortcuts/mail/draft"
 	"github.com/larksuite/cli/shortcuts/mail/emlbuilder"
@@ -26,10 +26,12 @@ var MailForward = common.Shortcut{
 	Risk:        "write",
 	Scopes:      []string{"mail:user_mailbox.message:modify", "mail:user_mailbox.message:readonly", "mail:user_mailbox:readonly", "mail:user_mailbox.message.address:read", "mail:user_mailbox.message.subject:read", "mail:user_mailbox.message.body:read"},
 	AuthTypes:   []string{"user"},
+	HasFormat:   true,
 	Flags: []common.Flag{
 		{Name: "message-id", Desc: "Required. Message ID to forward", Required: true},
 		{Name: "to", Desc: "Recipient email address(es), comma-separated"},
-		{Name: "body", Desc: "Body prepended before the forwarded message. Prefer HTML for rich formatting; plain text is also supported. Body type is auto-detected from the forward body and the original message. Use --plain-text to force plain-text mode."},
+		{Name: "body", Desc: "Body prepended before the forwarded message. Prefer HTML for rich formatting; plain text is also supported. Body type is auto-detected from the forward body and the original message. Use --plain-text to force plain-text mode. Mutually exclusive with --body-file."},
+		bodyFileFlag,
 		{Name: "from", Desc: "Sender email address for the From header. When using an alias (send_as) address, set this to the alias and use --mailbox for the owning mailbox. Defaults to the mailbox's primary address."},
 		{Name: "mailbox", Desc: "Mailbox email address that owns the draft (default: falls back to --from, then me). Use this when the sender (--from) differs from the mailbox, e.g. sending via an alias or send_as address."},
 		{Name: "cc", Desc: "CC email address(es), comma-separated"},
@@ -43,8 +45,10 @@ var MailForward = common.Shortcut{
 		{Name: "subject", Desc: "Optional. Override the auto-generated Fw: subject. When set, the shortcut uses this value verbatim instead of prefixing the original subject."},
 		{Name: "template-id", Desc: "Optional. Apply a saved template by ID (decimal integer string) before composing. The template's body/to/cc/bcc/attachments are merged into the forward draft (template values appended to user flags / forward-derived values; no de-duplication)."},
 		signatureFlag,
+		noSignatureFlag,
 		priorityFlag,
-		eventSummaryFlag, eventStartFlag, eventEndFlag, eventLocationFlag},
+		eventSummaryFlag, eventStartFlag, eventEndFlag, eventLocationFlag,
+		showLintDetailsFlag},
 	DryRun: func(ctx context.Context, runtime *common.RuntimeContext) *common.DryRunAPI {
 		messageId := runtime.Str("message-id")
 		to := runtime.Str("to")
@@ -72,6 +76,11 @@ var MailForward = common.Shortcut{
 		if err := validateTemplateID(runtime.Str("template-id")); err != nil {
 			return err
 		}
+		bodyFlag := runtime.Str("body")
+		bodyFile := strings.TrimSpace(runtime.Str("body-file"))
+		if err := validateBodyFileMutex(bodyFlag, bodyFile, runtime.ValidatePath); err != nil {
+			return err
+		}
 		if err := validateConfirmSendScope(runtime); err != nil {
 			return err
 		}
@@ -88,7 +97,7 @@ var MailForward = common.Shortcut{
 				return err
 			}
 		}
-		if err := validateSignatureWithPlainText(runtime.Bool("plain-text"), runtime.Str("signature-id")); err != nil {
+		if err := validateNoSignatureConflict(runtime.Bool("no-signature"), runtime.Str("signature-id")); err != nil {
 			return err
 		}
 		if err := validateEventFlags(runtime); err != nil {
@@ -102,7 +111,10 @@ var MailForward = common.Shortcut{
 	Execute: func(ctx context.Context, runtime *common.RuntimeContext) error {
 		messageId := runtime.Str("message-id")
 		to := runtime.Str("to")
-		body := runtime.Str("body")
+		body, bErr := resolveBodyFromFlags(runtime)
+		if bErr != nil {
+			return bErr
+		}
 		ccFlag := runtime.Str("cc")
 		bccFlag := runtime.Str("bcc")
 		plainText := runtime.Bool("plain-text")
@@ -116,18 +128,13 @@ var MailForward = common.Shortcut{
 			return err
 		}
 
-		signatureID := runtime.Str("signature-id")
 		mailboxID := resolveComposeMailboxID(runtime)
-		sigResult, sigErr := resolveSignature(ctx, runtime, mailboxID, signatureID, runtime.Str("from"))
-		if sigErr != nil {
-			return sigErr
-		}
 		sourceMsg, err := fetchComposeSourceMessage(runtime, mailboxID, messageId)
 		if err != nil {
-			return fmt.Errorf("failed to fetch original message: %w", err)
+			return mailDecorateProblemMessage(err, "failed to fetch original message")
 		}
 		if err := validateForwardAttachmentURLs(sourceMsg); err != nil {
-			return fmt.Errorf("forward blocked: %w", err)
+			return mailDecorateProblemMessage(err, "forward blocked")
 		}
 		orig := sourceMsg.Original
 
@@ -143,6 +150,18 @@ var MailForward = common.Shortcut{
 		senderEmail := resolvedSender
 		if senderEmail == "" {
 			senderEmail = orig.headTo
+		}
+
+		// Signature ID is resolved here (after senderEmail is finalised) so DefaultReplyID
+		// matches the correct usage. The actual image download in resolveSignature is deferred
+		// to after applyTemplate so the final plainText value (which a template can override
+		// via IsPlainTextMode) is used for the downloadImages decision.
+		signatureID := runtime.Str("signature-id")
+		noSignature := runtime.Bool("no-signature")
+		if noSignature {
+			signatureID = ""
+		} else if signatureID == "" {
+			signatureID = autoResolveSignatureID(runtime, mailboxID, senderEmail, true /*isReply*/)
 		}
 
 		// --template-id merge (§5.5 Q1-Q5).
@@ -186,6 +205,14 @@ var MailForward = common.Shortcut{
 				"ccs_count":          countAddresses(ccFlag),
 				"bccs_count":         countAddresses(bccFlag),
 			})
+		}
+		// Resolve signature after template processing so plainText reflects any IsPlainTextMode
+		// override from the template. This avoids downloading HTML signature images when the
+		// template forces plain-text mode, which could cause CDN 403/5xx or timeout errors.
+		sigResult, sigErr := resolveSignature(ctx, runtime, mailboxID, signatureID, senderEmail,
+			runtime.Str("signature-id") != "", !plainText)
+		if sigErr != nil {
+			return sigErr
 		}
 		subjectOverride := strings.TrimSpace(runtime.Str("subject"))
 
@@ -232,7 +259,7 @@ var MailForward = common.Shortcut{
 		}
 		useHTML := !plainText && (bodyIsHTML(body) || bodyIsHTML(orig.bodyRaw) || sigResult != nil)
 		if strings.TrimSpace(inlineFlag) != "" && !useHTML {
-			return fmt.Errorf("--inline requires HTML mode, but neither the new body nor the original message contains HTML")
+			return mailValidationParamError("--inline", "--inline requires HTML mode, but neither the new body nor the original message contains HTML")
 		}
 		inlineSpecs, err := parseInlineSpecs(inlineFlag)
 		if err != nil {
@@ -242,9 +269,11 @@ var MailForward = common.Shortcut{
 		var composedHTMLBody string
 		var composedTextBody string
 		var srcInlineBytes int64
+		// Lint findings flowing into the writing-path stdout envelope.
+		lintApplied, lintBlocked := emptyLintEnvelopeFields()
 		if useHTML {
 			if err := validateInlineImageURLs(sourceMsg); err != nil {
-				return fmt.Errorf("forward blocked: %w", err)
+				return mailDecorateProblemMessage(err, "forward blocked")
 			}
 			processedBody := buildBodyDiv(body, bodyIsHTML(body))
 			origLargeAttCard := stripLargeAttachmentCard(&orig)
@@ -261,12 +290,19 @@ var MailForward = common.Shortcut{
 			}
 			resolved, refs, resolveErr := draftpkg.ResolveLocalImagePaths(processedBody)
 			if resolveErr != nil {
-				return resolveErr
+				return mailValidationError("failed to resolve local image paths: %v", resolveErr).WithCause(resolveErr)
 			}
 			bodyWithSig := resolved
 			if sigResult != nil {
 				bodyWithSig += draftpkg.SignatureSpacing() + draftpkg.BuildSignatureHTML(sigResult.ID, sigResult.RenderedContent)
 			}
+			// Writing-path lint: lint user-authored body + signature, NOT the
+			// forward quote / large-attachment card derived from the original
+			// message (re-linting quote blocks risks dropping allow-listed
+			// Feishu-native quote markup).
+			cleaned, rep := runWritePathLint(bodyWithSig)
+			bodyWithSig = cleaned
+			lintApplied, lintBlocked = rep.Applied, rep.Blocked
 			composedHTMLBody = bodyWithSig + origLargeAttCard + forwardQuote
 			bld = bld.HTMLBody([]byte(composedHTMLBody))
 			bld = addSignatureImagesToBuilder(bld, sigResult)
@@ -290,7 +326,7 @@ var MailForward = common.Shortcut{
 				return err
 			}
 		} else {
-			composedTextBody = buildForwardedMessage(&orig, body)
+			composedTextBody = buildForwardedMessage(&orig, injectPlainTextSignature(body, sigResult))
 			bld = bld.TextBody([]byte(composedTextBody))
 		}
 		// Embed template SMALL non-inline attachments regardless of body mode.
@@ -327,7 +363,7 @@ var MailForward = common.Shortcut{
 			}
 			content, err := downloadAttachmentContent(runtime, att.DownloadURL)
 			if err != nil {
-				return fmt.Errorf("failed to download original attachment %s: %w", att.Filename, err)
+				return mailDecorateProblemMessage(err, "failed to download original attachment %s", att.Filename)
 			}
 			contentType := att.ContentType
 			if contentType == "" {
@@ -361,13 +397,13 @@ var MailForward = common.Shortcut{
 		}
 		for _, f := range userFiles {
 			if f.Size > MaxLargeAttachmentSize {
-				return output.ErrValidation("attachment %s (%.1f GB) exceeds the %.0f GB single file limit",
+				return mailFailedPreconditionError("attachment %s (%.1f GB) exceeds the %.0f GB single file limit",
 					f.FileName, float64(f.Size)/1024/1024/1024, float64(MaxLargeAttachmentSize)/1024/1024/1024)
 			}
 		}
 		totalCount := len(origAtts) + len(largeAttIDs) + len(userFiles)
 		if totalCount > MaxAttachmentCount {
-			return output.ErrValidation("attachment count %d exceeds the limit of %d", totalCount, MaxAttachmentCount)
+			return mailFailedPreconditionError("attachment count %d exceeds the limit of %d", totalCount, MaxAttachmentCount)
 		}
 		allFiles = append(allFiles, userFiles...)
 		classified := classifyAttachments(allFiles, emlBase)
@@ -393,7 +429,7 @@ var MailForward = common.Shortcut{
 		// Upload oversized attachments as large attachments.
 		if len(classified.Oversized) > 0 {
 			if composedHTMLBody == "" && composedTextBody == "" {
-				return output.ErrValidation("large attachments require a body; " +
+				return mailFailedPreconditionError("large attachments require a body; " +
 					"empty messages cannot include the download link")
 			}
 			if runtime.Config == nil || runtime.UserOpenId() == "" {
@@ -401,7 +437,7 @@ var MailForward = common.Shortcut{
 				for _, f := range classified.Oversized {
 					totalBytes += f.Size
 				}
-				return output.ErrValidation("total attachment size %.1f MB exceeds the 25 MB EML limit; "+
+				return mailFailedPreconditionError("total attachment size %.1f MB exceeds the 25 MB EML limit; "+
 					"large attachment upload requires user identity (--as user)",
 					float64(totalBytes)/1024/1024)
 			}
@@ -466,29 +502,36 @@ var MailForward = common.Shortcut{
 		if len(mergedLargeAttIDs) > 0 {
 			idsJSON, err := json.Marshal(mergedLargeAttIDs)
 			if err != nil {
-				return fmt.Errorf("failed to encode large attachment IDs: %w", err)
+				return errs.NewInternalError(errs.SubtypeSDKError, "failed to encode large attachment IDs: %v", err).WithCause(err)
 			}
 			bld = bld.Header(draftpkg.LargeAttachmentIDsHeader, base64.StdEncoding.EncodeToString(idsJSON))
 		}
 		rawEML, err := bld.BuildBase64URL()
 		if err != nil {
-			return fmt.Errorf("failed to build EML: %w", err)
+			return mailValidationError("failed to build EML: %v", err).WithCause(err)
 		}
 
 		draftResult, err := draftpkg.CreateWithRaw(runtime, mailboxID, rawEML)
 		if err != nil {
-			return fmt.Errorf("failed to create draft: %w", err)
+			return mailDecorateProblemMessage(err, "failed to create draft")
 		}
+		showLintDetails := runtime.Bool("show-lint-details")
 		if !confirmSend {
-			runtime.Out(buildDraftSavedOutput(draftResult, mailboxID), nil)
+			out := buildDraftSavedOutput(draftResult, mailboxID)
+			applyLintToEnvelope(out, lintApplied, lintBlocked, showLintDetails)
+			addComposeHint(out)
+			runtime.Out(out, nil)
 			hintSendDraft(runtime, mailboxID, draftResult.DraftID)
 			return nil
 		}
 		resData, err := draftpkg.Send(runtime, mailboxID, draftResult.DraftID, sendTime)
 		if err != nil {
-			return fmt.Errorf("failed to send forward (draft %s created but not sent): %w", draftResult.DraftID, err)
+			return mailDecorateProblemMessage(err, "failed to send forward (draft %s created but not sent)", draftResult.DraftID)
 		}
-		runtime.Out(buildDraftSendOutput(resData, mailboxID), nil)
+		out := buildDraftSendOutput(resData, mailboxID)
+		applyLintToEnvelope(out, lintApplied, lintBlocked, showLintDetails)
+		addComposeHint(out)
+		runtime.Out(out, nil)
 		hintMarkAsRead(runtime, mailboxID, messageId)
 		return nil
 	},

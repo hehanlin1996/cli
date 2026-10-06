@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/larksuite/cli/errs"
 	extcred "github.com/larksuite/cli/extension/credential"
 	"github.com/larksuite/cli/internal/cmdutil"
 	"github.com/larksuite/cli/internal/core"
@@ -90,6 +91,29 @@ func TestAuthCheckCmd_FlagParsing(t *testing.T) {
 	}
 }
 
+func TestAuthCheckCmd_AcceptsJSONFlag(t *testing.T) {
+	f, _, _, _ := cmdutil.TestFactory(t, &core.CliConfig{
+		AppID: "test-app", AppSecret: "test-secret", Brand: core.BrandFeishu,
+	})
+
+	var gotOpts *CheckOptions
+	cmd := NewCmdAuthCheck(f, func(opts *CheckOptions) error {
+		gotOpts = opts
+		return nil
+	})
+	cmd.SetArgs([]string{"--scope", "calendar:calendar:read", "--json"})
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotOpts == nil {
+		t.Fatal("expected opts to be set")
+	}
+	if !gotOpts.JSON {
+		t.Error("expected JSON=true")
+	}
+}
+
 func TestAuthLogoutCmd_FlagParsing(t *testing.T) {
 	f, _, _, _ := cmdutil.TestFactory(t, nil)
 
@@ -105,6 +129,27 @@ func TestAuthLogoutCmd_FlagParsing(t *testing.T) {
 	}
 	if gotOpts == nil {
 		t.Error("expected opts to be set")
+	}
+}
+
+func TestAuthLogoutCmd_AcceptsJSONFlag(t *testing.T) {
+	f, _, _, _ := cmdutil.TestFactory(t, nil)
+
+	var gotOpts *LogoutOptions
+	cmd := NewCmdAuthLogout(f, func(opts *LogoutOptions) error {
+		gotOpts = opts
+		return nil
+	})
+	cmd.SetArgs([]string{"--json"})
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotOpts == nil {
+		t.Fatal("expected opts to be set")
+	}
+	if !gotOpts.JSON {
+		t.Error("expected JSON=true")
 	}
 }
 
@@ -125,6 +170,27 @@ func TestAuthListCmd_FlagParsing(t *testing.T) {
 	}
 }
 
+func TestAuthListCmd_AcceptsJSONFlag(t *testing.T) {
+	f, _, _, _ := cmdutil.TestFactory(t, nil)
+
+	var gotOpts *ListOptions
+	cmd := NewCmdAuthList(f, func(opts *ListOptions) error {
+		gotOpts = opts
+		return nil
+	})
+	cmd.SetArgs([]string{"--json"})
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotOpts == nil {
+		t.Error("expected opts to be set")
+	}
+	if !gotOpts.JSON {
+		t.Error("expected JSON=true")
+	}
+}
+
 func TestAuthStatusCmd_FlagParsing(t *testing.T) {
 	f, _, _, _ := cmdutil.TestFactory(t, &core.CliConfig{
 		AppID: "test-app", AppSecret: "test-secret", Brand: core.BrandFeishu,
@@ -141,6 +207,29 @@ func TestAuthStatusCmd_FlagParsing(t *testing.T) {
 	}
 	if gotOpts == nil {
 		t.Error("expected opts to be set")
+	}
+}
+
+func TestAuthStatusCmd_AcceptsJSONFlag(t *testing.T) {
+	f, _, _, _ := cmdutil.TestFactory(t, &core.CliConfig{
+		AppID: "test-app", AppSecret: "test-secret", Brand: core.BrandFeishu,
+	})
+
+	var gotOpts *StatusOptions
+	cmd := NewCmdAuthStatus(f, func(opts *StatusOptions) error {
+		gotOpts = opts
+		return nil
+	})
+	cmd.SetArgs([]string{"--json"})
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotOpts == nil {
+		t.Error("expected opts to be set")
+	}
+	if !gotOpts.JSON {
+		t.Error("expected JSON=true")
 	}
 }
 
@@ -266,6 +355,32 @@ func TestAuthScopesCmd_FlagParsing(t *testing.T) {
 	}
 }
 
+func TestAuthScopesCmd_JSONFlagForcesJSONFormat(t *testing.T) {
+	f, _, _, _ := cmdutil.TestFactory(t, &core.CliConfig{
+		AppID: "test-app", AppSecret: "test-secret", Brand: core.BrandFeishu,
+	})
+
+	var gotOpts *ScopesOptions
+	cmd := NewCmdAuthScopes(f, func(opts *ScopesOptions) error {
+		gotOpts = opts
+		return nil
+	})
+	cmd.SetArgs([]string{"--format", "pretty", "--json"})
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotOpts == nil {
+		t.Fatal("expected opts to be set")
+	}
+	if !gotOpts.JSON {
+		t.Error("expected JSON=true")
+	}
+	if gotOpts.Format != "json" {
+		t.Errorf("expected format json, got %s", gotOpts.Format)
+	}
+}
+
 func TestAuthScopesRun_UsesTenantAccessTokenFromCredentialProvider(t *testing.T) {
 	f, _, _, reg := cmdutil.TestFactory(t, &core.CliConfig{
 		AppID: "test-app", AppSecret: "", Brand: core.BrandFeishu,
@@ -315,6 +430,54 @@ func TestAuthScopesRun_UsesTenantAccessTokenFromCredentialProvider(t *testing.T)
 	}
 	if got := appInfoStub.CapturedHeaders.Get("Authorization"); got != "Bearer tenant-token" {
 		t.Fatalf("Authorization header = %q, want %q", got, "Bearer tenant-token")
+	}
+}
+
+// TestAuthScopesRun_LarkPermissionError_TypedAsPermissionError pins that when
+// the Lark API returns a permission code (99991679 with permission_violations),
+// getAppInfo classifies it as *errs.PermissionError carrying the server-
+// supplied MissingScopes — not a bare error wrapped as InternalError.
+func TestAuthScopesRun_LarkPermissionError_TypedAsPermissionError(t *testing.T) {
+	f, _, _, reg := cmdutil.TestFactory(t, &core.CliConfig{
+		AppID: "test-app", AppSecret: "test-secret", Brand: core.BrandFeishu,
+	})
+	tokenResolver := &authScopesTokenResolver{}
+	f.Credential = credential.NewCredentialProvider(nil, nil, tokenResolver, nil)
+
+	reg.Register(&httpmock.Stub{
+		Method: http.MethodGet,
+		URL:    "/open-apis/application/v6/applications/test-app",
+		Body: map[string]interface{}{
+			"code": 99991679,
+			"msg":  "scope missing",
+			"error": map[string]interface{}{
+				"permission_violations": []interface{}{
+					map[string]interface{}{"subject": "application:application:self_manage"},
+				},
+			},
+		},
+	})
+
+	err := authScopesRun(&ScopesOptions{
+		Factory: f,
+		Ctx:     context.Background(),
+		Format:  "json",
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	var pe *errs.PermissionError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected *errs.PermissionError, got %T: %v", err, err)
+	}
+	if len(pe.MissingScopes) != 1 || pe.MissingScopes[0] != "application:application:self_manage" {
+		t.Errorf("MissingScopes = %v, want server-supplied [application:application:self_manage]", pe.MissingScopes)
+	}
+
+	var intErr *errs.InternalError
+	if errors.As(err, &intErr) {
+		t.Error("Lark business error must not be wrapped as InternalError; permission semantics lost")
 	}
 }
 
@@ -389,15 +552,8 @@ func TestAuthBlockedByExternalProvider(t *testing.T) {
 			if matched != nil && matched != cmd && !matched.SilenceUsage {
 				t.Error("expected PersistentPreRunE to set SilenceUsage on matched subcommand")
 			}
-			var exitErr *output.ExitError
-			if !errors.As(err, &exitErr) {
-				t.Fatalf("expected *output.ExitError, got %T: %v", err, err)
-			}
-			if exitErr.Code != output.ExitValidation {
-				t.Errorf("exit code = %d, want %d", exitErr.Code, output.ExitValidation)
-			}
-			if exitErr.Detail == nil || exitErr.Detail.Type != "external_provider" {
-				t.Errorf("error type = %v, want %q", exitErr.Detail, "external_provider")
+			if gotCode := output.ExitCodeOf(err); gotCode != output.ExitValidation {
+				t.Errorf("exit code = %d, want %d", gotCode, output.ExitValidation)
 			}
 		})
 	}

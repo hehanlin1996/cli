@@ -17,6 +17,7 @@ import (
 type StatusOptions struct {
 	Factory *cmdutil.Factory
 	Verify  bool
+	JSON    bool
 }
 
 // NewCmdAuthStatus creates the auth status subcommand.
@@ -35,6 +36,7 @@ func NewCmdAuthStatus(f *cmdutil.Factory, runF func(*StatusOptions) error) *cobr
 	}
 
 	cmd.Flags().BoolVar(&opts.Verify, "verify", false, "verify token against server (requires network)")
+	cmd.Flags().BoolVar(&opts.JSON, "json", false, "structured JSON output")
 	cmdutil.SetRisk(cmd, "read")
 
 	return cmd
@@ -61,7 +63,6 @@ func authStatusRun(opts *StatusOptions) error {
 	diagnostics := identitydiag.Diagnose(context.Background(), f, config, opts.Verify)
 	result["identities"] = diagnostics
 	result["identity"] = effectiveIdentity(diagnostics)
-	addLegacyUserFields(result, diagnostics.User)
 	addEffectiveVerification(result, diagnostics)
 	addStatusNote(result, diagnostics)
 
@@ -83,29 +84,6 @@ func effectiveIdentity(d identitydiag.Result) string {
 		return identityBot
 	default:
 		return identityNone
-	}
-}
-
-func addLegacyUserFields(result map[string]interface{}, user identitydiag.Identity) {
-	if user.OpenID == "" {
-		return
-	}
-	result["userName"] = user.UserName
-	result["userOpenId"] = user.OpenID
-	if user.TokenStatus != "" {
-		result["tokenStatus"] = user.TokenStatus
-	}
-	if user.Scope != "" {
-		result["scope"] = user.Scope
-	}
-	if user.ExpiresAt != "" {
-		result["expiresAt"] = user.ExpiresAt
-	}
-	if user.RefreshExpiresAt != "" {
-		result["refreshExpiresAt"] = user.RefreshExpiresAt
-	}
-	if user.GrantedAt != "" {
-		result["grantedAt"] = user.GrantedAt
 	}
 }
 

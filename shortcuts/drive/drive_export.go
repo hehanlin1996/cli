@@ -5,13 +5,12 @@ package drive
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/larksuite/cli/internal/output"
+	"github.com/larksuite/cli/errs"
 	"github.com/larksuite/cli/internal/validate"
 	"github.com/larksuite/cli/shortcuts/common"
 )
@@ -35,6 +34,7 @@ var DriveExport = common.Shortcut{
 		{Name: "doc-type", Desc: "source document type: doc | docx | sheet | bitable | slides", Required: true, Enum: []string{"doc", "docx", "sheet", "bitable", "slides"}},
 		{Name: "file-extension", Desc: "export format: docx | pdf | xlsx | csv | markdown | base (bitable only) | pptx (slides only)", Required: true, Enum: []string{"docx", "pdf", "xlsx", "csv", "markdown", "base", "pptx"}},
 		{Name: "sub-id", Desc: "sub-table/sheet ID, required when exporting sheet/bitable as csv"},
+		{Name: "only-schema", Type: "bool", Desc: "export only bitable schema when --doc-type bitable --file-extension base"},
 		{Name: "file-name", Desc: "preferred output filename (optional)"},
 		{Name: "output-dir", Default: ".", Desc: "local output directory (default: current directory)"},
 		{Name: "overwrite", Type: "bool", Desc: "overwrite existing output file"},
@@ -45,6 +45,7 @@ var DriveExport = common.Shortcut{
 			DocType:       runtime.Str("doc-type"),
 			FileExtension: runtime.Str("file-extension"),
 			SubID:         runtime.Str("sub-id"),
+			OnlySchema:    runtime.Bool("only-schema"),
 		})
 	},
 	DryRun: func(ctx context.Context, runtime *common.RuntimeContext) *common.DryRunAPI {
@@ -53,6 +54,7 @@ var DriveExport = common.Shortcut{
 			DocType:       runtime.Str("doc-type"),
 			FileExtension: runtime.Str("file-extension"),
 			SubID:         runtime.Str("sub-id"),
+			OnlySchema:    runtime.Bool("only-schema"),
 		}
 		// Markdown export is a special case: docx markdown comes from the V2
 		// docs_ai fetch API directly instead of the Drive export task API.
@@ -79,6 +81,9 @@ var DriveExport = common.Shortcut{
 		if strings.TrimSpace(spec.SubID) != "" {
 			body["sub_id"] = spec.SubID
 		}
+		if spec.OnlySchema {
+			body["only_schema"] = true
+		}
 
 		dr := common.NewDryRunAPI().
 			Desc("3-step orchestration: create export task -> limited polling -> download file").
@@ -96,6 +101,7 @@ var DriveExport = common.Shortcut{
 			DocType:       runtime.Str("doc-type"),
 			FileExtension: runtime.Str("file-extension"),
 			SubID:         runtime.Str("sub-id"),
+			OnlySchema:    runtime.Bool("only-schema"),
 		}
 		outputDir := runtime.Str("output-dir")
 		preferredFileName := strings.TrimSpace(runtime.Str("file-name"))
@@ -107,7 +113,7 @@ var DriveExport = common.Shortcut{
 		if spec.FileExtension == "markdown" {
 			fmt.Fprintf(runtime.IO().ErrOut, "Exporting docx as markdown: %s\n", common.MaskToken(spec.Token))
 			apiPath := fmt.Sprintf("/open-apis/docs_ai/v1/documents/%s/fetch", validate.EncodePathSegment(spec.Token))
-			data, err := runtime.DoAPIJSONWithLogID(
+			data, err := runtime.CallAPITyped(
 				"POST",
 				apiPath,
 				nil,
@@ -122,11 +128,11 @@ var DriveExport = common.Shortcut{
 			// Extract content from the V2 response: data.document.content
 			doc, ok := data["document"].(map[string]interface{})
 			if !ok {
-				return output.Errorf(output.ExitAPI, "api_error", "invalid markdown fetch response: missing document object")
+				return errs.NewInternalError(errs.SubtypeInvalidResponse, "invalid markdown fetch response: missing document object")
 			}
 			content, ok := doc["content"].(string)
 			if !ok {
-				return output.Errorf(output.ExitAPI, "api_error", "invalid markdown fetch response: missing document.content")
+				return errs.NewInternalError(errs.SubtypeInvalidResponse, "invalid markdown fetch response: missing document.content")
 			}
 
 			fileName := preferredFileName
@@ -207,11 +213,7 @@ var DriveExport = common.Shortcut{
 						status.FileToken,
 						recoveryCommand,
 					)
-					var exitErr *output.ExitError
-					if errors.As(err, &exitErr) && exitErr.Detail != nil {
-						return output.ErrWithHint(exitErr.Code, exitErr.Detail.Type, exitErr.Detail.Message, hint)
-					}
-					return output.ErrWithHint(output.ExitAPI, "api_error", err.Error(), hint)
+					return appendDriveExportRecoveryHint(err, hint)
 				}
 				out["ticket"] = ticket
 				out["doc_type"] = spec.DocType
@@ -225,7 +227,7 @@ var DriveExport = common.Shortcut{
 				if msg == "" {
 					msg = status.StatusLabel()
 				}
-				return output.Errorf(output.ExitAPI, "api_error", "export task failed: %s (ticket=%s)", msg, ticket)
+				return errs.NewAPIError(errs.SubtypeServerError, "export task failed: %s (ticket=%s)", msg, ticket)
 			}
 
 			fmt.Fprintf(runtime.IO().ErrOut, "Export status %d/%d: %s\n", attempt, driveExportPollAttempts, status.StatusLabel())
@@ -238,14 +240,7 @@ var DriveExport = common.Shortcut{
 				ticket,
 				nextCommand,
 			)
-			var exitErr *output.ExitError
-			if errors.As(lastPollErr, &exitErr) && exitErr.Detail != nil {
-				if strings.TrimSpace(exitErr.Detail.Hint) != "" {
-					hint = exitErr.Detail.Hint + "\n" + hint
-				}
-				return output.ErrWithHint(exitErr.Code, exitErr.Detail.Type, exitErr.Detail.Message, hint)
-			}
-			return output.ErrWithHint(output.ExitAPI, "api_error", lastPollErr.Error(), hint)
+			return appendDriveExportRecoveryHint(lastPollErr, hint)
 		}
 
 		failed := false

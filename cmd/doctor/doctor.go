@@ -14,11 +14,13 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/larksuite/cli/errs"
 	"github.com/larksuite/cli/internal/build"
 	"github.com/larksuite/cli/internal/cmdutil"
 	"github.com/larksuite/cli/internal/core"
 	"github.com/larksuite/cli/internal/identitydiag"
 	"github.com/larksuite/cli/internal/output"
+	"github.com/larksuite/cli/internal/transport"
 	"github.com/larksuite/cli/internal/update"
 )
 
@@ -93,7 +95,7 @@ func doctorRun(opts *DoctorOptions) error {
 		// underlying problem is still visible.
 		msg, hint := err.Error(), ""
 		if errors.Is(err, os.ErrNotExist) {
-			var cfgErr *core.ConfigError
+			var cfgErr *errs.ConfigError
 			if errors.As(core.NotConfiguredError(), &cfgErr) {
 				msg, hint = cfgErr.Message, cfgErr.Hint
 			}
@@ -107,7 +109,7 @@ func doctorRun(opts *DoctorOptions) error {
 	cfg, err := f.Config()
 	if err != nil {
 		hint := ""
-		var cfgErr *core.ConfigError
+		var cfgErr *errs.ConfigError
 		if errors.As(err, &cfgErr) {
 			hint = cfgErr.Hint
 		}
@@ -152,7 +154,9 @@ func networkChecks(ctx context.Context, opts *DoctorOptions, ep core.Endpoints) 
 		}
 	}
 
-	httpClient := &http.Client{}
+	// Use the shared proxy-plugin-aware transport so connectivity checks reflect
+	// the real egress path (and are blocked when proxy plugin fails closed).
+	httpClient := transport.NewHTTPClient(0)
 	mcpURL := ep.MCP + "/mcp"
 
 	type probeResult struct {

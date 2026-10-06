@@ -95,6 +95,61 @@ func TestFormatMessageItem(t *testing.T) {
 	}
 }
 
+func TestFormatMessageItem_UpdateTime_Present(t *testing.T) {
+	raw := map[string]interface{}{
+		"msg_type":    "text",
+		"message_id":  "om_edit",
+		"updated":     true,
+		"create_time": "1710500000",
+		"update_time": "1710600000",
+		"sender":      map[string]interface{}{"id": "ou_sender", "sender_type": "user"},
+		"body":        map[string]interface{}{"content": `{"text":"edited"}`},
+	}
+
+	got := FormatMessageItem(raw, nil)
+	want := common.FormatTime("1710600000")
+	if got["update_time"] != want {
+		t.Fatalf("FormatMessageItem() update_time = %#v, want %#v", got["update_time"], want)
+	}
+}
+
+func TestFormatMessageItem_UpdateTime_Absent(t *testing.T) {
+	raw := map[string]interface{}{
+		"msg_type":    "text",
+		"message_id":  "om_no_edit",
+		"updated":     false,
+		"create_time": "1710500000",
+		"sender":      map[string]interface{}{"id": "ou_sender", "sender_type": "user"},
+		"body":        map[string]interface{}{"content": `{"text":"hi"}`},
+	}
+
+	got := FormatMessageItem(raw, nil)
+	if _, ok := got["update_time"]; ok {
+		t.Fatalf("FormatMessageItem() should not include update_time when absent, got = %#v", got["update_time"])
+	}
+}
+
+// TestFormatMessageItem_UpdateTime_UnchangedMessage: real API behavior — even
+// for unedited messages, server returns update_time == create_time. We must
+// NOT echo it through, otherwise every message looks "edited" to consumers.
+// Gate the output on updated==true.
+func TestFormatMessageItem_UpdateTime_UnchangedMessage(t *testing.T) {
+	raw := map[string]interface{}{
+		"msg_type":    "text",
+		"message_id":  "om_unchanged",
+		"updated":     false,
+		"create_time": "1710500000",
+		"update_time": "1710500000", // server echoes create_time
+		"sender":      map[string]interface{}{"id": "ou_sender", "sender_type": "user"},
+		"body":        map[string]interface{}{"content": `{"text":"hi"}`},
+	}
+
+	got := FormatMessageItem(raw, nil)
+	if v, ok := got["update_time"]; ok {
+		t.Fatalf("FormatMessageItem() must skip update_time for unedited message, got = %#v", v)
+	}
+}
+
 func TestResolveAppLinkDomain(t *testing.T) {
 	if got := resolveAppLinkDomain(core.BrandFeishu); got != "applink.feishu.cn" {
 		t.Fatalf("resolveAppLinkDomain(feishu) = %q", got)
@@ -459,6 +514,79 @@ func TestMiscConverters(t *testing.T) {
 				t.Fatalf("%s = %q, want %q", tt.name, tt.got, tt.want)
 			}
 		})
+	}
+}
+
+// TestFormatMessageItemResourcesGate verifies the resources block is only
+// emitted when extractResources is on; the default path (and back-compat
+// wrappers) must never add a resources key.
+func TestFormatMessageItemResourcesGate(t *testing.T) {
+	raw := map[string]interface{}{
+		"msg_type":    "image",
+		"message_id":  "om_img",
+		"create_time": "1710500000",
+		"sender":      map[string]interface{}{"id": "ou_sender", "sender_type": "user"},
+		"body":        map[string]interface{}{"content": `{"image_key":"img_99"}`},
+	}
+
+	// Gate off via the back-compat wrapper.
+	off := FormatMessageItemWithMergePrefetch(raw, nil, nil, nil)
+	if _, ok := off["resources"]; ok {
+		t.Fatalf("FormatMessageItemWithMergePrefetch should not emit resources, got %#v", off["resources"])
+	}
+
+	// Gate off via plain FormatMessageItem.
+	plain := FormatMessageItem(raw, nil)
+	if _, ok := plain["resources"]; ok {
+		t.Fatalf("FormatMessageItem should not emit resources, got %#v", plain["resources"])
+	}
+
+	// Gate on.
+	on := FormatMessageItemWithMergePrefetchOpts(raw, nil, nil, nil, true)
+	resources, ok := on["resources"].([]map[string]interface{})
+	if !ok || len(resources) != 1 {
+		t.Fatalf("FormatMessageItemWithMergePrefetchOpts(extract=true) resources = %#v, want 1 ref", on["resources"])
+	}
+	r := resources[0]
+	if r["message_id"] != "om_img" || r["key"] != "img_99" || r["type"] != "image" {
+		t.Fatalf("resource ref = %#v, want {om_img,img_99,image}", r)
+	}
+	if _, ok := r["local_path"]; ok {
+		t.Fatalf("extract stage must not set local_path yet, got %#v", r["local_path"])
+	}
+}
+
+func TestAudioConverterFileKey(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "key and duration", raw: `{"file_key":"audio_1","duration":3500}`, want: `<audio key="audio_1" duration="4s"/>`},
+		{name: "key escaped", raw: `{"file_key":"a\"k","duration":2000}`, want: `<audio key="a\"k" duration="2s"/>`},
+		{name: "key without duration", raw: `{"file_key":"audio_2"}`, want: `<audio key="audio_2"/>`},
+		{name: "duration without key", raw: `{"duration":3500}`, want: "[Voice: 4s]"},
+		{name: "neither key nor duration", raw: `{}`, want: "[Voice]"},
+		{name: "invalid json", raw: `{invalid`, want: "[Invalid audio JSON]"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := (audioMsgConverter{}).Convert(&ConvertContext{RawContent: tt.raw}); got != tt.want {
+				t.Fatalf("audioMsgConverter.Convert(%s) = %q, want %q", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestStickerUnchanged: DEC-001 default A keeps sticker rendering as [Sticker]
+// regardless of payload; sticker must never be enriched or downloaded.
+func TestStickerUnchanged(t *testing.T) {
+	if got := (stickerConverter{}).Convert(nil); got != "[Sticker]" {
+		t.Fatalf("stickerConverter.Convert(nil) = %q, want %q", got, "[Sticker]")
+	}
+	if got := (stickerConverter{}).Convert(&ConvertContext{RawContent: `{"file_key":"sticker_1"}`}); got != "[Sticker]" {
+		t.Fatalf("stickerConverter.Convert(with key) = %q, want %q", got, "[Sticker]")
 	}
 }
 

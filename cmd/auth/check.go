@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/larksuite/cli/errs"
 	larkauth "github.com/larksuite/cli/internal/auth"
 	"github.com/larksuite/cli/internal/cmdutil"
 	"github.com/larksuite/cli/internal/output"
@@ -18,6 +19,7 @@ import (
 type CheckOptions struct {
 	Factory *cmdutil.Factory
 	Scope   string
+	JSON    bool
 }
 
 // NewCmdAuthCheck creates the auth check subcommand.
@@ -36,6 +38,7 @@ func NewCmdAuthCheck(f *cmdutil.Factory, runF func(*CheckOptions) error) *cobra.
 	}
 
 	cmd.Flags().StringVar(&opts.Scope, "scope", "", "scopes to check (space-separated)")
+	cmd.Flags().BoolVar(&opts.JSON, "json", false, "structured JSON output")
 	cmd.MarkFlagRequired("scope")
 	cmdutil.SetRisk(cmd, "read")
 
@@ -47,7 +50,7 @@ func authCheckRun(opts *CheckOptions) error {
 
 	required := strings.Fields(opts.Scope)
 	if len(required) == 0 {
-		return output.ErrValidation("--scope cannot be empty")
+		return errs.NewValidationError(errs.SubtypeInvalidArgument, "--scope cannot be empty").WithParam("--scope")
 	}
 
 	config, err := f.Config()

@@ -11,8 +11,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/larksuite/cli/errs"
+	"github.com/larksuite/cli/internal/i18n"
 	"github.com/larksuite/cli/internal/keychain"
-	"github.com/larksuite/cli/internal/output"
 	"github.com/larksuite/cli/internal/validate"
 	"github.com/larksuite/cli/internal/vfs"
 )
@@ -41,7 +42,7 @@ type AppConfig struct {
 	AppId      string      `json:"appId"`
 	AppSecret  SecretInput `json:"appSecret"`
 	Brand      LarkBrand   `json:"brand"`
-	Lang       string      `json:"lang,omitempty"`
+	Lang       i18n.Lang   `json:"lang,omitempty"`
 	DefaultAs  Identity    `json:"defaultAs,omitempty"` // AsUser | AsBot | AsAuto
 	StrictMode *StrictMode `json:"strictMode,omitempty"`
 	Users      []AppUser   `json:"users"`
@@ -159,6 +160,7 @@ type CliConfig struct {
 	DefaultAs           Identity // AsUser | AsBot | AsAuto | "" (from config file)
 	UserOpenId          string
 	UserName            string
+	Lang                i18n.Lang
 	SupportedIdentities uint8 `json:"-"` // bitflag: 1=user, 2=bot; set by credential provider
 }
 
@@ -185,6 +187,12 @@ func GetConfigPath() string {
 	return filepath.Join(GetConfigDir(), "config.json")
 }
 
+// ErrMalformedConfig marks a config-load failure caused by malformed file
+// content (unparseable JSON, structurally empty) rather than a missing or
+// unreadable file. Callers classify with errors.Is rather than sniffing the
+// message text.
+var ErrMalformedConfig = errors.New("malformed config")
+
 // LoadMultiAppConfig loads multi-app config from disk.
 func LoadMultiAppConfig() (*MultiAppConfig, error) {
 	data, err := vfs.ReadFile(GetConfigPath())
@@ -194,10 +202,10 @@ func LoadMultiAppConfig() (*MultiAppConfig, error) {
 
 	var multi MultiAppConfig
 	if err := json.Unmarshal(data, &multi); err != nil {
-		return nil, fmt.Errorf("invalid config format: %w", err)
+		return nil, fmt.Errorf("invalid config format: %w: %w", ErrMalformedConfig, err)
 	}
 	if len(multi.Apps) == 0 {
-		return nil, fmt.Errorf("invalid config format: no apps")
+		return nil, fmt.Errorf("invalid config format: no apps: %w", ErrMalformedConfig)
 	}
 	return &multi, nil
 }
@@ -235,34 +243,33 @@ func RequireConfigForProfile(kc keychain.KeychainAccess, profileOverride string)
 func ResolveConfigFromMulti(raw *MultiAppConfig, kc keychain.KeychainAccess, profileOverride string) (*CliConfig, error) {
 	app := raw.CurrentAppConfig(profileOverride)
 	if app == nil {
-		return nil, &ConfigError{
-			Code:    3,
-			Type:    "config",
-			Message: fmt.Sprintf("profile %q not found", profileOverride),
-			Hint:    fmt.Sprintf("available profiles: %s", formatProfileNames(raw.ProfileNames())),
-		}
+		return nil, errs.NewConfigError(errs.SubtypeNotConfigured, "profile %q not found", profileOverride).
+			WithHint("available profiles: %s", formatProfileNames(raw.ProfileNames()))
 	}
 
 	if err := ValidateSecretKeyMatch(app.AppId, app.AppSecret); err != nil {
-		return nil, &ConfigError{Code: 3, Type: "config",
-			Message: "appId and appSecret keychain key are out of sync",
-			Hint:    err.Error()}
+		return nil, errs.NewConfigError(errs.SubtypeNotConfigured, "appId and appSecret keychain key are out of sync").
+			WithHint("%s", err.Error()).
+			WithCause(err)
 	}
 
 	secret, err := ResolveSecretInput(app.AppSecret, kc)
 	if err != nil {
-		// Deprecated: legacy *output.ExitError passthrough; removed after typed migration.
-		var exitErr *output.ExitError
-		if errors.As(err, &exitErr) {
-			return nil, exitErr
+		if errs.IsTyped(err) {
+			return nil, err
 		}
-		return nil, &ConfigError{Code: 3, Type: "config", Message: err.Error()}
+		subtype := errs.SubtypeNotConfigured
+		if isMalformedConfigError(err) {
+			subtype = errs.SubtypeInvalidConfig
+		}
+		return nil, errs.NewConfigError(subtype, "%s", err.Error()).WithCause(err)
 	}
 	cfg := &CliConfig{
 		ProfileName: app.ProfileName(),
 		AppID:       app.AppId,
 		AppSecret:   secret,
 		Brand:       app.Brand,
+		Lang:        app.Lang,
 		DefaultAs:   app.DefaultAs,
 	}
 	if len(app.Users) > 0 {
@@ -284,7 +291,8 @@ func RequireAuthForProfile(kc keychain.KeychainAccess, profileOverride string) (
 		return nil, err
 	}
 	if cfg.UserOpenId == "" {
-		return nil, &ConfigError{Code: 3, Type: "auth", Message: "not logged in", Hint: "run `lark-cli auth login` in the background. It blocks and outputs a verification URL — retrieve the URL and open it in a browser to complete login."}
+		return nil, errs.NewAuthenticationError(errs.SubtypeTokenMissing, "not logged in").
+			WithHint("run `lark-cli auth login` in the background. It blocks and outputs a verification URL — retrieve the URL and open it in a browser to complete login.")
 	}
 	return cfg, nil
 }

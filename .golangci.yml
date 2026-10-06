@@ -29,11 +29,11 @@ linters:
     - unused          # checks for unused constants, variables, functions and types
     - depguard        # blocks forbidden package imports
     - forbidigo       # forbids specific function calls
+    - errorlint       # enforces error wrapping (%w) and errors.Is/As over == and type asserts
 
     # To enable later after fixing existing issues:
     # - errcheck      # checks for unchecked errors
     # - errname       # checks that error types are named XxxError
-    # - errorlint     # checks error wrapping best practices
     # - gosec         # security-oriented linter
     # - misspell      # finds commonly misspelled English words
     # - staticcheck   # comprehensive static analysis
@@ -49,16 +49,47 @@ linters:
           - gocritic
           - depguard
           - forbidigo
-      - path-except: (shortcuts/|internal/)
+          - errorlint # tests legitimately do identity (==) and concrete type-assert checks
+      # forbidigo runs repo-wide (minus the boundaries below) so errs-no-bare-wrap
+      # has no gap. The framework bans (os/vfs, raw HTTP, fmt.Print, filepath,
+      # log) stay scoped to shortcuts/ + internal/ + config/auth/service via the
+      # next rule; elsewhere only errs-no-bare-wrap fires.
+      - path-except: (shortcuts/|internal/|cmd/|events/)
+        linters:
+          - forbidigo
+      - path-except: (shortcuts/|internal/|cmd/auth/|cmd/config/|cmd/service/)
+        text: (vfs|IOStreams|ctx\.Out|shortcuts-no-raw-http|filepath functions|os\.Exit|structured error return)
         linters:
           - forbidigo
       - path: internal/vfs/
         linters:
           - forbidigo
-      # The shortcuts-no-raw-http forbidigo rule below is shortcuts-only;
-      # internal/ legitimately wraps raw HTTP for the client / credential layer.
+      # internal/gen build-time generators (standalone `package main` run via
+      # go:generate) are not shortcut runtime code — no ctx/runtime/framework —
+      # so the shortcut forbidigo bans don't apply. Going "compliant" is also
+      # impossible here: a structured error return needs os.Exit (also banned),
+      # and the vfs.Xxx() alternative is blocked by depguard shortcuts-no-vfs.
+      - path: shortcuts/.*/internal/gen/
+        linters:
+          - forbidigo
+      # internal/qualitygate/cmd contains standalone CI tools. Their main
+      # entrypoints legitimately own process exit codes and stdio, matching the
+      # old tools/ layout before these packages moved under internal/.
+      - path: internal/qualitygate/cmd/[^/]+/main\.go$
+        linters:
+          - forbidigo
+      # shortcuts-no-raw-http is shortcuts-only; internal/ wraps raw HTTP
+      # for the client / credential layer.
       - path-except: shortcuts/
         text: shortcuts-no-raw-http
+        linters:
+          - forbidigo
+      # errs-no-bare-wrap enforced across every command/wire boundary by
+      # structural prefix, so any future business domain or command is covered
+      # without editing an allowlist. Genuine intermediate wraps inside these
+      # paths use //nolint:forbidigo with a reason.
+      - path-except: (cmd/|shortcuts/|events/)
+        text: errs-no-bare-wrap
         linters:
           - forbidigo
 
@@ -79,6 +110,12 @@ linters:
                 Use runtime.FileIO() for file operations or runtime.ValidatePath() for path validation.
     forbidigo:
       forbid:
+        # ── bare error wraps banned on fully-typed paths ──
+        - pattern: (fmt\.Errorf|errors\.New)\b
+          msg: >-
+            [errs-no-bare-wrap] final errors must be typed (errs.NewXxxError);
+            wrap a cause with .WithCause(err). Genuine intermediate wraps:
+            //nolint:forbidigo with a reason.
         # ── http: shortcuts must not construct raw HTTP requests ──
         # Bans request / client construction; constants (http.MethodPost,
         # http.StatusOK) and pure helpers (http.StatusText, http.Header) are
